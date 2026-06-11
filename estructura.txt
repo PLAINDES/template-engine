@@ -1,0 +1,67 @@
+Listado de rutas de carpetas para el volumen Nuevo vol
+El número de serie del volumen es 00000025 F645:4B05
+D:.
+¦   .env
+¦   .gitignore
+¦   docker-compose.yml
+¦   Dockerfile
+¦   estructura.txt
+¦   requirements.txt
+¦   
++---app
+¦   ¦   main.py
+¦   ¦   
+¦   +---core
+¦   ¦       config.py
+¦   ¦       __init__.py
+¦   ¦       
+¦   +---models
+¦   ¦   ¦   schemas.py
+¦   ¦   ¦   __init__.py
+¦   ¦   ¦   
+¦   ¦   +---__pycache__
+¦   ¦           schemas.cpython-311.pyc
+¦   ¦           __init__.cpython-311.pyc
+¦   ¦           
+¦   +---routers
+¦   ¦   ¦   sections.py
+¦   ¦   ¦   
+¦   ¦   +---__pycache__
+¦   ¦           sections.cpython-311.pyc
+¦   ¦           
+¦   +---services
+¦   ¦   ¦   filler.py
+¦   ¦   ¦   html_converter.py
+¦   ¦   ¦   parser.py
+¦   ¦   ¦   __init__.py
+¦   ¦   ¦   
+¦   ¦   +---sections
+¦   ¦   ¦   ¦   heading_parser.py
+¦   ¦   ¦   ¦   section_builder.py
+¦   ¦   ¦   ¦   section_extractor.py
+¦   ¦   ¦   ¦   __init__.py
+¦   ¦   ¦   ¦   
+¦   ¦   ¦   +---__pycache__
+¦   ¦   ¦           heading_parser.cpython-311.pyc
+¦   ¦   ¦           section_builder.cpython-311.pyc
+¦   ¦   ¦           section_extractor.cpython-311.pyc
+¦   ¦   ¦           __init__.cpython-311.pyc
+¦   ¦   ¦           
+¦   ¦   +---__pycache__
+¦   ¦           filler.cpython-311.pyc
+¦   ¦           html_converter.cpython-311.pyc
+¦   ¦           parser.cpython-311.pyc
+¦   ¦           __init__.cpython-311.pyc
+¦   ¦           
+¦   +---utils
+¦       ¦   minio_client.py
+¦       ¦   __init__.py
+¦       ¦   
+¦       +---__pycache__
+¦               minio_client.cpython-311.pyc
+¦               __init__.cpython-311.pyc
+¦               
++---__pycache__
+        config.cpython-311.pyc
+        main.cpython-311.pyc
+        
