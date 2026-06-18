@@ -29,8 +29,8 @@ jobs:
       - name: Build and run
         run: |
           cd /home/ubuntu/projects/proproject/template-engine
-          docker compose -f docker-compose.yml --env-file .env build --no-cache
-          docker compose -f docker-compose.yml --env-file .env up -d --remove-orphans
+          docker compose -p prosedi-docx -f docker-compose.yml --env-file .env build --no-cache
+          docker compose -p prosedi-docx -f docker-compose.yml --env-file .env up -d --remove-orphans
 
       - name: Limpiar imágenes huérfanas
         if: always()
