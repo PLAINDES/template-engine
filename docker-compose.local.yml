@@ -4,7 +4,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: prosedi_docx_service
-    restart: always
     ports:
       - "8001:8001"
     environment:
@@ -14,22 +13,12 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - MINIO_BUCKET=prosedi
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-        reservations:
-          cpus: "0.25"
-          memory: 128M
+    volumes:
+      - .:/app
     networks:
-      - prosedi_net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - proproyectapi_prosedi_net
+    restart: unless-stopped
 
 networks:
-  prosedi_net:
+  proproyectapi_prosedi_net:
     external: true
