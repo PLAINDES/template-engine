@@ -1,37 +1,32 @@
 name: Deploy — Template Engine
-
 on:
   push:
     branches: ["main"]
-
 concurrency:
   group: template-engine-production
   cancel-in-progress: true
-
 jobs:
   deploy:
     name: Deploy
     runs-on: self-hosted
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Create .env
-        run: echo "${{ secrets.ENV_PROD }}" > ./.env
-
+        run: |
+          cat << 'EOF' > ./.env
+          ${{ secrets.ENV_PROD }}
+          EOF
       - name: Sync al servidor
         run: |
           mkdir -p /home/ubuntu/projects/proproject/template-engine
           rsync -av --delete ./ /home/ubuntu/projects/proproject/template-engine/
-
       - name: Build and run
         run: |
           cd /home/ubuntu/projects/proproject/template-engine
           docker compose -p prosedi-docx -f docker-compose.yml --env-file .env build --no-cache
           docker compose -p prosedi-docx -f docker-compose.yml --env-file .env up -d --remove-orphans
-
       - name: Limpiar imágenes huérfanas
         if: always()
         run: docker image prune -f
