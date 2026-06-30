@@ -18,6 +18,7 @@ class ImagenPlaceholder(BaseModel):
     index:           int
     paragraph_index: int
     order:           int = 0
+    key:             str = ""
 
 class ParseResult(BaseModel):
     minio_key:       str
@@ -42,9 +43,11 @@ class ImagenData(BaseModel):
     placeholder_index: int
     paragraph_index:   int = 0
     minio_key:         str
+    key:               str = ""
     width_inches:      float = 4.0
     titulo:            str = ""
     pie:               str = ""
+    descripcion:       str = ""
 
 class BloqueItemData(BaseModel):
     variables: Dict[str, str] = {}
@@ -53,12 +56,18 @@ class BloqueData(BaseModel):
     tipo:  str
     items: List[Dict[str, str]] = []
 
+class TextReplacement(BaseModel):
+    originalText: str
+    newText:      str
+    sectionIndex: int = -1
+
 class FillRequest(BaseModel):
-    minio_key: str
-    variables: Dict[str, str]
-    tablas:    List[TablaData]  = []
-    imagenes:  List[ImagenData] = []
-    bloques:   List[BloqueData] = []
+    minio_key:    str
+    variables:    Dict[str, str]
+    tablas:       List[TablaData]        = []
+    imagenes:     List[ImagenData]       = []
+    bloques:      List[BloqueData]       = []
+    replacements: List[TextReplacement]  = []
 
 class FillResult(BaseModel):
     minio_key: str
