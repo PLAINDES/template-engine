@@ -120,6 +120,24 @@ def fill_and_stream(buffer: bytes, minio_key: str, variables: dict, tablas: list
     )
 
 
+def fill_and_render_html(buffer: bytes, minio_key: str, variables: dict, tablas: list, imagenes: list, bloques: list = [], replacements: list = []) -> dict:
+    """
+    Llena el documento con los datos del borrador y LUEGO lo convierte a HTML.
+    A diferencia de get_docx_html (que convierte la plantilla con [VARIABLES] sin llenar),
+    esto retorna el documento final tal como se vería descargado: sin placeholders,
+    con tablas e imágenes reales.
+    """
+    filled_buffer = fill_document(
+        docx_buffer  = buffer,
+        variables    = variables,
+        tablas       = tablas,
+        imagenes     = imagenes,
+        bloques      = bloques,
+        replacements = replacements,
+    )
+    return docx_to_html(filled_buffer)
+
+
 def extract_plain_text(minio_key: str) -> dict:
     from io import BytesIO
     from docx import Document

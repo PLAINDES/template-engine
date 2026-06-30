@@ -99,6 +99,31 @@ async def fill_docx_download(request: FillRequest):
     )
 
 
+@router.post("/fill-docx-to-html")
+async def fill_docx_to_html(request: FillRequest):
+    """
+    Llena la plantilla con los datos del borrador y devuelve el HTML
+    del documento final (sin placeholders, con tablas/imágenes reales).
+    Usado para la vista de revisión de solo lectura (Supervisor).
+    """
+    try:
+        buffer = download_from_minio(request.minio_key)
+    except Exception as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+    try:
+        return docx_service.fill_and_render_html(
+            buffer       = buffer,
+            minio_key    = request.minio_key,
+            variables    = request.variables,
+            tablas       = [t.model_dump() for t in request.tablas],
+            imagenes     = [i.model_dump() for i in request.imagenes],
+            bloques      = [b.model_dump() for b in request.bloques],
+            replacements = [r.model_dump() for r in request.replacements],
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Error generando vista del documento: {e}")
+
+
 @router.delete("/delete-docx", response_model=DeleteResult)
 async def delete_docx(minio_key: str = Query(...)):
     if not minio_key:
