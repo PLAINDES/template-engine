@@ -31,7 +31,7 @@ TABLE_KEYS = {
     "INSERTAR_TABLA",
 }
 
-# Keywords de imagen — todas las variantes posibles
+# Keywords de imagen — variantes genéricas (sin nombre único)
 IMAGE_KEYS = {
     "IMAGEN",
     "IMAGEN_PEGAR",
@@ -42,6 +42,21 @@ IMAGE_KEYS = {
     "FOTOGRAFIA",
     "ANADIR_IMAGE",
 }
+
+# Prefijos que indican una imagen con nombre único: [IMAGEN_MAPA_UBICACION]
+IMAGE_PREFIXES = ("IMAGEN_", "FOTO_", "IMG_")
+
+
+def _is_image_key(upper_key: str) -> bool:
+    """Detecta si una variable es un placeholder de imagen (genérico o con nombre)."""
+    if upper_key in IMAGE_KEYS:
+        return True
+    # Variables con nombre: IMAGEN_DIAGRAMA, FOTO_PLANO, IMG_MAPA
+    # Pero excluir las que son keywords genéricas como IMAGEN_PEGAR
+    for prefix in IMAGE_PREFIXES:
+        if upper_key.startswith(prefix) and upper_key not in IMAGE_KEYS:
+            return True
+    return False
 
 
 def extract_variables(docx_buffer: bytes) -> Dict:
@@ -102,8 +117,8 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                 global_idx += 1
                 continue
 
-            # ── IMÁGENES ────────────────────────────────────────
-            if upper_key in IMAGE_KEYS:
+            # ── IMÁGENES (genéricas y con nombre) ──────────────
+            if _is_image_key(upper_key):
 
                 all_elements.append({
                     "type": "imagen",
@@ -111,6 +126,7 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                         "index": img_count,
                         "paragraph_index": para_idx,
                         "order": global_idx,
+                        "key": key,
                     }
                 })
 
@@ -156,7 +172,7 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                     key = match.group(1)
                     upper_key = key.upper()
 
-                    if upper_key in TABLE_KEYS or upper_key in IMAGE_KEYS:
+                    if upper_key in TABLE_KEYS or _is_image_key(upper_key):
                         continue
 
                     if key not in seen_vars:
@@ -193,7 +209,7 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                 key = match.group(1)
                 upper_key = key.upper()
 
-                if upper_key in TABLE_KEYS or upper_key in IMAGE_KEYS:
+                if upper_key in TABLE_KEYS or _is_image_key(upper_key):
                     continue
 
                 if key not in seen_vars:
