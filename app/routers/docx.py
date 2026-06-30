@@ -60,12 +60,13 @@ async def fill_docx(request: FillRequest):
         raise HTTPException(404, f"Documento no encontrado: {e}")
     try:
         return docx_service.fill_and_save(
-            buffer    = buffer,
-            minio_key = request.minio_key,
-            variables = request.variables,
-            tablas    = [t.model_dump() for t in request.tablas],
-            imagenes  = [i.model_dump() for i in request.imagenes],
-            bloques   = [b.model_dump() for b in request.bloques],
+            buffer       = buffer,
+            minio_key    = request.minio_key,
+            variables    = request.variables,
+            tablas       = [t.model_dump() for t in request.tablas],
+            imagenes     = [i.model_dump() for i in request.imagenes],
+            bloques      = [b.model_dump() for b in request.bloques],
+            replacements = [r.model_dump() for r in request.replacements],
         )
     except Exception as e:
         raise HTTPException(500, f"Error procesando: {e}")
@@ -79,12 +80,13 @@ async def fill_docx_download(request: FillRequest):
         raise HTTPException(404, f"Documento no encontrado: {e}")
     try:
         result_buffer = docx_service.fill_and_stream(
-            buffer    = buffer,
-            minio_key = request.minio_key,
-            variables = request.variables,
-            tablas    = [t.model_dump() for t in request.tablas],
-            imagenes  = [i.model_dump() for i in request.imagenes],
-            bloques   = [b.model_dump() for b in request.bloques],
+            buffer       = buffer,
+            minio_key    = request.minio_key,
+            variables    = request.variables,
+            tablas       = [t.model_dump() for t in request.tablas],
+            imagenes     = [i.model_dump() for i in request.imagenes],
+            bloques      = [b.model_dump() for b in request.bloques],
+            replacements = [r.model_dump() for r in request.replacements],
         )
     except Exception as e:
         raise HTTPException(500, f"Error procesando: {e}")
@@ -139,3 +141,13 @@ async def upload_image(file: UploadFile = File(...)):
         raise HTTPException(500, f"Error subiendo imagen: {e}")
  
     return {"key": key, "url": url}
+
+
+@router.get("/extract-text")
+def extract_text(key: str = Query(..., description="MinIO key del .docx")):
+    try:
+        return docx_service.extract_plain_text(key)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Error extrayendo texto: {e}")

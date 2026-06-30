@@ -25,6 +25,17 @@ IMAGE_KEYS = {
     "INSERTAR_IMAGEN", "FOTO", "ANADIR_IMAGE",
 }
 
+IMAGE_PREFIXES = ("IMAGEN_", "FOTO_", "IMG_")
+
+
+def _is_image_key(upper_key: str) -> bool:
+    if upper_key in IMAGE_KEYS:
+        return True
+    for prefix in IMAGE_PREFIXES:
+        if upper_key.startswith(prefix) and upper_key not in IMAGE_KEYS:
+            return True
+    return False
+
 
 def fill_document(
     docx_buffer: bytes,
@@ -32,6 +43,7 @@ def fill_document(
     tablas:      List[Dict],
     imagenes:    List[Dict],
     bloques:     List[Dict] = [],
+    replacements: List[Dict] = [],
 ) -> bytes:
     print(f"[filler] tablas recibidas: {len(tablas)}")
     for t in tablas:
@@ -62,7 +74,16 @@ def fill_document(
         for para in section.footer.paragraphs:
             _replace_vars_in_paragraph(para, variables)
 
-    # 2. Tablas
+    # 2. Reemplazos de texto (mejoras de IA)
+    if replacements:
+        print(f"[filler] reemplazos de texto: {len(replacements)}")
+        for repl in replacements:
+            orig = repl.get("originalText", "")
+            nuevo = repl.get("newText", "")
+            if orig and nuevo:
+                _apply_text_replacement(doc, orig, nuevo)
+
+    # 3. Tablas
     tablas_sorted = sorted(tablas, key=lambda t: t.get("paragraph_index", 0), reverse=True)
     for tabla_data in tablas_sorted:
         _insert_table_at_placeholder(doc, tabla_data)
@@ -203,9 +224,11 @@ def _insert_image_at_placeholder(doc: Document, imagen_data: Dict):
 
     para_idx     = imagen_data.get("paragraph_index", 0)
     minio_key    = imagen_data.get("minio_key", "")
+    var_key      = imagen_data.get("key", "")
     width_inches = imagen_data.get("width_inches", 4.0)
     titulo       = imagen_data.get("titulo", "")
     pie          = imagen_data.get("pie", "")
+    descripcion  = imagen_data.get("descripcion", "")
 
     if not minio_key:
         return
@@ -213,15 +236,26 @@ def _insert_image_at_placeholder(doc: Document, imagen_data: Dict):
     paragraphs  = doc.paragraphs
     target_para = None
 
-    if para_idx < len(paragraphs):
+    # Match por nombre de variable (imágenes con nombre único)
+    if var_key:
+        placeholder = f"[{var_key}]"
+        for para in paragraphs:
+            t = "".join(run.text for run in para.runs)
+            if placeholder in t:
+                target_para = para
+                break
+
+    # Fallback: match por paragraph_index (imágenes genéricas)
+    if not target_para and para_idx < len(paragraphs):
         t = "".join(run.text for run in paragraphs[para_idx].runs)
-        if any(k in t for k in IMAGE_KEYS):
+        if any(k in t.upper() for k in IMAGE_KEYS) or any(t.upper().startswith(p) for p in IMAGE_PREFIXES):
             target_para = paragraphs[para_idx]
 
+    # Fallback: buscar cualquier placeholder de imagen
     if not target_para:
         for para in paragraphs:
             t = "".join(run.text for run in para.runs)
-            if any(k in t for k in IMAGE_KEYS):
+            if _is_image_key(t.strip().strip("[]").upper()):
                 target_para = para
                 break
 
@@ -254,6 +288,21 @@ def _insert_image_at_placeholder(doc: Document, imagen_data: Dict):
         pie_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
         target_para._element.addnext(pie_para._element)
 
+    # Descripción debajo de la imagen (párrafo normal, texto generado por IA)
+    if descripcion and descripcion.strip():
+        desc_para = doc.add_paragraph()
+        run = desc_para.add_run(descripcion.strip())
+        run.font.size = Pt(11)
+        desc_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        # Insertar después del pie si existe, si no después de la imagen
+        anchor = target_para._element
+        if pie and pie.strip():
+            # Buscar el pie que acabamos de insertar
+            next_elem = target_para._element.getnext()
+            if next_elem is not None:
+                anchor = next_elem
+        anchor.addnext(desc_para._element)
+
     # Título encima de la imagen — addprevious para que quede antes, no después
     if titulo and titulo.strip():
         titulo_para = doc.add_paragraph()
@@ -262,6 +311,46 @@ def _insert_image_at_placeholder(doc: Document, imagen_data: Dict):
         run.font.bold  = True
         titulo_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
         target_para._element.addprevious(titulo_para._element)
+
+
+def _apply_text_replacement(doc: Document, original: str, replacement: str) -> None:
+    """Busca el texto original en los párrafos del documento y lo reemplaza."""
+    replaced = False
+    for para in doc.paragraphs:
+        full_text = "".join(run.text for run in para.runs)
+        if original in full_text:
+            new_text = full_text.replace(original, replacement)
+            if para.runs:
+                para.runs[0].text = new_text
+                for run in para.runs[1:]:
+                    run.text = ""
+            replaced = True
+            print(f"[filler] ✓ Reemplazo aplicado ({len(original)} → {len(replacement)} chars)")
+            break
+    if not replaced:
+        # Buscar en celdas de tablas
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        full_text = "".join(run.text for run in para.runs)
+                        if original in full_text:
+                            new_text = full_text.replace(original, replacement)
+                            if para.runs:
+                                para.runs[0].text = new_text
+                                for run in para.runs[1:]:
+                                    run.text = ""
+                            replaced = True
+                            print(f"[filler] ✓ Reemplazo en tabla ({len(original)} → {len(replacement)} chars)")
+                            break
+                    if replaced:
+                        break
+                if replaced:
+                    break
+            if replaced:
+                break
+    if not replaced:
+        print(f"[filler] ✗ No se encontró texto para reemplazar: '{original[:50]}...'")
 
 
 def _find_preceding_heading_elem(body, start_elem):
