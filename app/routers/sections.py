@@ -1,5 +1,5 @@
 # app/routers/sections.py
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import Response
 from app.models.schemas import HeadingsResult, ExtractSectionsRequest
 from app.services.sections.heading_parser import parse_headings
@@ -49,6 +49,108 @@ async def get_section_full_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+@router.post("/full-with-replacements")
+async def get_section_full_with_replacements(request: Request):
+    """
+    Igual que /full/ pero aplica reemplazos de texto al HTML resultante.
+    """
+    import re as re_module
+
+    body = await request.json()
+    minio_key    = body.get("minio_key", "")
+    h1_index     = body.get("h1_index", 0)
+    replacements = body.get("replacements", [])
+
+    print(f"[full-with-replacements] key={minio_key} h1={h1_index} repls={len(replacements)}")
+
+    try:
+        result = get_section_full(minio_key, h1_index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+    if not isinstance(result, dict):
+        result = {"html": "", "structure": []}
+
+    html = result.get("html", "")
+    if replacements and html:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        for repl in replacements:
+            if not isinstance(repl, dict):
+                continue
+            orig = repl.get("originalText", "")
+            new_text = repl.get("newText", "")
+            if not orig or not new_text:
+                continue
+
+            # Normalizar espacios para comparar
+            norm = lambda s: re_module.sub(r'\s+', ' ', s).strip()
+            norm_orig = norm(orig)
+
+            # Buscar en el texto completo del HTML
+            full_text = soup.get_text()
+            norm_full = norm(full_text)
+
+            if norm_orig not in norm_full:
+                print(f"[full-with-replacements] ✗ No encontrado: {orig[:50]}...")
+                continue
+
+            # Buscar en cada text node
+            found = False
+            for text_node in soup.find_all(string=True):
+                node_text = str(text_node)
+                if norm(node_text).find(norm_orig) == -1 and norm_orig not in norm(node_text):
+                    continue
+                # Reemplazar en este nodo
+                import re
+                pattern = re.sub(r'\s+', r'\\s+', re.escape(norm_orig))
+                match = re.search(pattern, node_text)
+                if match:
+                    styled_tag = soup.new_tag("span")
+                    styled_tag["style"] = "background:#ede9fe;border-bottom:2px solid #7c3aed;border-radius:2px;padding:0 2px;"
+                    styled_tag.string = new_text
+                    before = node_text[:match.start()]
+                    after = node_text[match.end():]
+                    text_node.replace_with(before)
+                    text_node_parent = soup.find(string=before)
+                    if text_node_parent:
+                        text_node_parent.insert_after(after)
+                        text_node_parent.insert_after(styled_tag)
+                    found = True
+                    print(f"[full-with-replacements] ✓ Reemplazo en nodo: {orig[:50]}...")
+                    break
+
+            # Fallback: buscar concatenando nodos contiguos
+            if not found:
+                # Reemplazo directo en el HTML string como último recurso
+                try:
+                    words = norm_orig.split(' ')
+                    words = [w for w in words if w]
+                    pattern = ''.join(
+                        re_module.escape(w) + (r'(?:(?:<[^>]*>)*[\s\n\r]*(?:<[^>]*>)*' if i < len(words) - 1 else '')
+                        + (')' if i < len(words) - 1 else '')
+                        for i, w in enumerate(words)
+                    )
+                    styled = f'<span style="background:#ede9fe;border-bottom:2px solid #7c3aed;border-radius:2px;padding:0 2px;">{new_text}</span>'
+                    new_html = re_module.sub(pattern, styled, str(soup), count=1, flags=re_module.DOTALL)
+                    if new_html != str(soup):
+                        soup = BeautifulSoup(new_html, 'html.parser')
+                        found = True
+                        print(f"[full-with-replacements] ✓ Reemplazo regex fallback: {orig[:50]}...")
+                except Exception as ex:
+                    print(f"[full-with-replacements] Error fallback: {ex}")
+
+            if not found:
+                print(f"[full-with-replacements] ✗ No se pudo reemplazar: {orig[:50]}...")
+
+        result["html"] = str(soup)
+
+    return result
 
 
 @router.post("/warmup/{minio_key:path}")
