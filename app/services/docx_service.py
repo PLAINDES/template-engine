@@ -89,13 +89,14 @@ def get_docx_html(minio_key: str) -> dict:
     return docx_to_html(buffer)
 
 
-def fill_and_save(buffer: bytes, minio_key: str, variables: dict, tablas: list, imagenes: list, bloques: list = []) -> FillResult:
+def fill_and_save(buffer: bytes, minio_key: str, variables: dict, tablas: list, imagenes: list, bloques: list = [], replacements: list = []) -> FillResult:
     result_buffer = fill_document(
-        docx_buffer = buffer,
-        variables   = variables,
-        tablas      = tablas,
-        imagenes    = imagenes,
-        bloques     = bloques,
+        docx_buffer  = buffer,
+        variables    = variables,
+        tablas       = tablas,
+        imagenes     = imagenes,
+        bloques      = bloques,
+        replacements = replacements,
     )
 
     timestamp  = int(time.time())
@@ -108,14 +109,26 @@ def fill_and_save(buffer: bytes, minio_key: str, variables: dict, tablas: list, 
     return FillResult(minio_key=output_key, minio_url=output_url)
 
 
-def fill_and_stream(buffer: bytes, minio_key: str, variables: dict, tablas: list, imagenes: list, bloques: list = []) -> bytes:
+def fill_and_stream(buffer: bytes, minio_key: str, variables: dict, tablas: list, imagenes: list, bloques: list = [], replacements: list = []) -> bytes:
     return fill_document(
-        docx_buffer = buffer,
-        variables   = variables,
-        tablas      = tablas,
-        imagenes    = imagenes,
-        bloques     = bloques,
+        docx_buffer  = buffer,
+        variables    = variables,
+        tablas       = tablas,
+        imagenes     = imagenes,
+        bloques      = bloques,
+        replacements = replacements,
     )
+
+
+def extract_plain_text(minio_key: str) -> dict:
+    from io import BytesIO
+    from docx import Document
+    from app.utils.docx_cache import get_docx_cached
+
+    buffer   = get_docx_cached(minio_key)
+    doc      = Document(BytesIO(buffer))
+    parrafos = [p.text for p in doc.paragraphs if p.text.strip()]
+    return {"texto": "\n".join(parrafos)}
 
 
 def delete_document(minio_key: str) -> None:
