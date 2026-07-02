@@ -3,6 +3,7 @@ import re
 from docx import Document
 from io import BytesIO
 from typing import Dict, List
+from app.services.sections.heading_parser import _get_heading_level
 
 # Regex flexible:
 # - acepta MAYÚSCULAS y minúsculas
@@ -83,11 +84,16 @@ def extract_variables(docx_buffer: bytes) -> Dict:
     global_idx = 0
     tabla_count = 0
     img_count = 0
+    current_h1_index = None  # párrafo H1 más reciente
 
     # ─────────────────────────────────────────────────────────────
     # 1. PÁRRAFOS DEL BODY
     # ─────────────────────────────────────────────────────────────
     for para_idx, para in enumerate(doc.paragraphs):
+
+        # Rastrear el H1 actual para saber a qué sección pertenece cada variable
+        if _get_heading_level(para) == 1:
+            current_h1_index = para_idx
 
         full_text = _join_runs(para)
 
@@ -147,6 +153,7 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                         "value": "",
                         "in_table": False,
                         "order": global_idx,
+                        "h1_index": current_h1_index,
                     }
                 })
 
