@@ -153,6 +153,13 @@ async def get_section_full_with_replacements(request: Request):
     return result
 
 
+@router.delete("/cache/{minio_key:path}")
+async def invalidate_cache(minio_key: str):
+    """Limpia el caché de un documento para forzar re-procesamiento."""
+    invalidate_document_cache(minio_key)
+    return {"status": "invalidated", "minio_key": minio_key}
+
+
 @router.post("/warmup/{minio_key:path}")
 async def warmup_cache(
     minio_key:        str,
