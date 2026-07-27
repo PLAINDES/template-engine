@@ -17,13 +17,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 512M
+          cpus: "1.5"
+          memory: 768M
         reservations:
-          cpus: "0.25"
-          memory: 128M
+          cpus: "0.5"
+          memory: 256M
     networks:
       - prosedi_net
+      - proproyectapi_prosedi_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -32,4 +33,6 @@ services:
 
 networks:
   prosedi_net:
+    external: true
+  proproyectapi_prosedi_net:
     external: true
