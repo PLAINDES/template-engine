@@ -98,21 +98,54 @@ def fill_document(
     return output.getvalue()
 
 
+_ANNOTATION_RE = re.compile(
+    r'\[(?:AÑADIR|ANADIR|INSERTAR|AGREGAR|AÑADE|AÑADA)_?(?:IMAGEN|CUADRO|TABLA|MAPA|GRAFICO|GRÁFICO)[^\]]*\]',
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def _replace_vars_in_paragraph(para, variables: Dict[str, str]):
     if not para.runs:
         return
     full_text = "".join(run.text for run in para.runs)
     if not VAR_RE.search(full_text):
         return
+
     new_text = full_text
     for key, value in variables.items():
-        new_text = new_text.replace(f"[{key}]", str(value))
+        # Limpiar anotaciones de imagen/cuadro que la IA genera dentro del texto
+        clean_value = _ANNOTATION_RE.sub('', str(value)).strip()
+        new_text = new_text.replace(f"[{key}]", clean_value)
+
     if new_text == full_text:
         return
+
+    # Si el valor tiene saltos de línea, expandir en múltiples párrafos
+    lines = [ln for ln in new_text.split('\n') if ln.strip()]
+    if not lines:
+        # Todo era anotaciones — dejar el párrafo vacío
+        if para.runs:
+            para.runs[0].text = ''
+            for run in para.runs[1:]:
+                run.text = ''
+        return
+
+    # Primera línea va en este mismo párrafo (conserva su estilo)
     if para.runs:
-        para.runs[0].text = new_text
+        para.runs[0].text = lines[0]
         for run in para.runs[1:]:
-            run.text = ""
+            run.text = ''
+
+    # Líneas siguientes → párrafos nuevos copiando el estilo del placeholder
+    current = para
+    for line in lines[1:]:
+        new_para = copy.deepcopy(para)
+        if new_para.runs:
+            new_para.runs[0].text = line
+            for run in new_para.runs[1:]:
+                run.text = ''
+        current._element.addnext(new_para._element)
+        current = new_para
 
 
 def _add_caption_paragraph(doc: Document, target_para, text: str, align: str = "center") -> None:
