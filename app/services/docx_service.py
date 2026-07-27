@@ -1,5 +1,6 @@
 # app/services/docx_service.py
 import time
+import threading
 from app.models.schemas import ParseResult, FillResult
 from app.services.parser import extract_variables
 from app.services.filler import fill_document
@@ -11,6 +12,26 @@ from app.utils.minio_client import (
     delete_from_minio,
     list_objects_from_minio,
 )
+
+# Caché de resultados de extract_variables por minio_key
+# Evita re-parsear la plantilla en cada apertura del proyecto
+_parse_cache: dict[str, dict] = {}
+_parse_lock  = threading.Lock()
+
+
+def _get_parse_cached(minio_key: str) -> dict | None:
+    with _parse_lock:
+        return _parse_cache.get(minio_key)
+
+
+def _set_parse_cached(minio_key: str, result: dict) -> None:
+    with _parse_lock:
+        _parse_cache[minio_key] = result
+
+
+def _invalidate_parse_cache(minio_key: str) -> None:
+    with _parse_lock:
+        _parse_cache.pop(minio_key, None)
 
 
 def list_documents() -> dict:
@@ -45,6 +66,7 @@ def upload_and_parse(buffer: bytes, original_filename: str) -> ParseResult:
         minio_url = ""
 
     result = extract_variables(buffer)
+    _set_parse_cached(minio_key, result)  # guardar en caché al subir
 
     return ParseResult(
         minio_key       = minio_key,
@@ -60,8 +82,16 @@ def upload_and_parse(buffer: bytes, original_filename: str) -> ParseResult:
 
 
 def reload_document(minio_key: str) -> ParseResult:
-    buffer = download_from_minio(minio_key)
-    result = extract_variables(buffer)
+    # Usar caché si está disponible — evita re-parsear plantillas grandes
+    cached = _get_parse_cached(minio_key)
+    if cached:
+        print(f"[reload_document] ✓ caché hit: {minio_key}")
+        result = cached
+    else:
+        print(f"[reload_document] caché miss — parseando: {minio_key}")
+        buffer = download_from_minio(minio_key)
+        result = extract_variables(buffer)
+        _set_parse_cached(minio_key, result)
 
     try:
         minio_url = get_presigned_url(minio_key)
