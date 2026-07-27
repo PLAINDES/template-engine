@@ -84,16 +84,26 @@ def extract_variables(docx_buffer: bytes) -> Dict:
     global_idx = 0
     tabla_count = 0
     img_count = 0
-    current_h1_index = None  # párrafo H1 más reciente
+    current_h1_index   = None   # párrafo H1 más reciente
+    current_sub_heading = None  # encabezado más cercano (cualquier nivel) antes de la variable
 
     # ─────────────────────────────────────────────────────────────
     # 1. PÁRRAFOS DEL BODY
     # ─────────────────────────────────────────────────────────────
     for para_idx, para in enumerate(doc.paragraphs):
 
-        # Rastrear el H1 actual para saber a qué sección pertenece cada variable
-        if _get_heading_level(para) == 1:
+        level = _get_heading_level(para)
+
+        # Rastrear H1 para agrupar secciones
+        if level == 1:
             current_h1_index = para_idx
+
+        # Rastrear el encabezado más cercano de CUALQUIER nivel
+        # → se usará como subHeading de la variable siguiente
+        if level is not None:
+            heading_text = _join_runs(para).strip()
+            if heading_text:
+                current_sub_heading = heading_text
 
         full_text = _join_runs(para)
 
@@ -153,7 +163,8 @@ def extract_variables(docx_buffer: bytes) -> Dict:
                         "value": "",
                         "in_table": False,
                         "order": global_idx,
-                        "h1_index": current_h1_index,
+                        "h1_index":    current_h1_index,
+                        "sub_heading": current_sub_heading or "",
                     }
                 })
 

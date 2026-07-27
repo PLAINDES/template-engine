@@ -3,11 +3,13 @@ from pydantic import BaseModel
 from typing import List, Dict
 
 class VariableInfo(BaseModel):
-    key:      str
-    label:    str
-    value:    str  = ""
-    in_table: bool = False
-    order:    int  = 0    # orden de aparición en el documento
+    key:         str
+    label:       str
+    value:       str  = ""
+    in_table:    bool = False
+    order:       int  = 0    # orden de aparición en el documento
+    h1_index:    int | None = None   # índice del párrafo H1 más cercano
+    sub_heading: str        = ""     # heading más cercano de cualquier nivel
 
 class TablaPlaceholder(BaseModel):
     index:           int
