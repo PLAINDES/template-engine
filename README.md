@@ -14,6 +14,7 @@ This microservice is the document processing engine for the Plataformas Financie
 - **Storage:** MinIO 7.2.9 (S3-compatible)
 - **Data Validation:** Pydantic 2.9 + pydantic-settings 2.5
 - **Image Processing:** Pillow 11.1.0
+- **HTML Parsing:** beautifulsoup4 4.12.3
 
 ### Directory Structure
 
@@ -34,7 +35,9 @@ Uploads a DOCX file to MinIO and extracts its placeholder inventory.
 
 - **Variables:** Detects `[VARIABLE_NAME]` patterns across body, tables, headers, and footers. Supports uppercase, lowercase, accents, and underscores.
 - **Tables:** Detects keyword-based placeholders (`[TABLA_...]`, `[CREAR_TABLA_...]`, etc.).
-- **Images:** Detects image placeholders (`[IMAGEN_...]`, `[FOTO_...]`, `[FOTOGRAFÍA_...]`, etc.).
+- **Images:** Detects two kinds of image placeholders:
+  - **Generic:** `[IMAGEN]`, `[FOTO]`, `[FOTOGRAFÍA]`, etc. — matched by position.
+  - **Named:** `[IMAGEN_MAPA]`, `[FOTO_PLANO]`, `[IMG_DIAGRAMA]`, etc. — matched by variable name so each image goes to the right placeholder regardless of order.
 - Returns a structured `ParseResult` with all found placeholders and their order of appearance.
 
 ### 2. Document Filling (`POST /fill-docx`, `POST /fill-docx-download`)
@@ -43,9 +46,11 @@ Fills a previously parsed template with real data and produces a new DOCX.
 
 - **Variable substitution:** Replaces `[KEY]` with its assigned value, preserving font and style.
 - **Table injection:** Inserts a full table (headers, rows, title, footer) at the placeholder paragraph.
-- **Image injection:** Downloads an image from MinIO by key and inserts it at the placeholder with configurable width and captions.
+- **Image injection:** Downloads an image from MinIO by key and inserts it at the placeholder with configurable width, title, footer caption, and an optional AI-generated description paragraph below the image.
 - **Block repetition:** `[BLOQUE_TYPE_START]...[BLOQUE_TYPE_END]` markers repeat a section of the document for N items, including automatic H1 heading replication.
+- **Text replacements:** Optional `replacements` array in the request (`originalText` → `newText`) applies AI-generated improvements directly to paragraph or table text before producing the output.
 - `fill-docx` saves the result to MinIO and returns a presigned URL. `fill-docx-download` streams the file directly to the client.
+- `fill-docx-to-html` fills the template and immediately converts the result to HTML — used for the supervisor read-only preview without downloading the file.
 
 ### 3. HTML Conversion (`GET /docx-to-html/{minio_key}`)
 
@@ -63,14 +68,16 @@ Navigates a document's heading hierarchy and extracts content by section.
 - `GET /sections/html/{minio_key}?h1_index=N` — Returns the HTML of a specific H1 section.
 - `GET /sections/structure/{minio_key}?h1_index=N` — Returns the structural outline of a section.
 - `GET /sections/full/{minio_key}?h1_index=N` — Returns HTML + structure in a single call.
+- `POST /sections/full-with-replacements` — Same as `/full/` but applies a list of text replacements to the resulting HTML. Replaced text is highlighted with a purple underline style (used for AI suggestion previews).
 - `POST /sections/warmup/{minio_key}` — Pre-caches the full document conversion as a background task.
-- `POST /sections/extract` — Extracts multiple sections and assembles them into a new DOCX file.
+- `POST /sections/extract` — Extracts multiple sections and assembles them into a new DOCX file, **preserving the order chosen by the user** in `selected_indexes`.
 
 ### 5. Storage Management
 
 All documents are stored in MinIO under a configurable bucket.
 
 - `GET /list-docx` — Lists all uploaded documents with metadata.
+- `GET /extract-text?key=` — Extracts the plain text content of a DOCX (paragraphs only, no tables).
 - `DELETE /delete-docx` — Deletes a document and invalidates its cache entries.
 - `POST /upload-image` — Uploads a standalone image to MinIO for later use in document filling.
 - Presigned URLs are generated with a 7-day expiry for secure client downloads.
