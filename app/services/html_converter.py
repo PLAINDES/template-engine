@@ -1,7 +1,14 @@
 # app/services/html_converter.py
+import base64
 import mammoth
 import re
 from io import BytesIO
+
+
+def _img_to_data_uri(image):
+    with image.open() as f:
+        data = base64.b64encode(f.read()).decode("utf-8")
+    return {"src": "data:{};base64,{}".format(image.content_type, data)}
 
 # Regex para variables normales: [VARIABLE]
 VAR_PATTERN = re.compile(
@@ -129,14 +136,7 @@ def docx_to_html(docx_buffer: bytes) -> dict:
     result = mammoth.convert_to_html(
         BytesIO(docx_buffer),
         style_map=style_map,
-        convert_image=mammoth.images.img_element(
-            lambda image: {
-                "src": "data:{};base64,{}".format(
-                    image.content_type,
-                    __import__("base64").b64encode(image.read()).decode("utf-8"),
-                )
-            }
-        ),
+        convert_image=mammoth.images.img_element(_img_to_data_uri),
     )
 
     html = result.value
