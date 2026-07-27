@@ -90,9 +90,14 @@ def _extract_docx_section(docx_buffer: bytes, start: int, end: int) -> bytes:
 
 
 def _extract_structure(doc: Document, start: int, end: int) -> list:
-    paragraphs = doc.paragraphs
-    structure  = []
-    current_h2 = None
+    """
+    Construye árbol de headings + variables.
+    heading_stack[i] es el nodo activo en profundidad i (0=H2, 1=H3, 2=H4…).
+    Las variables se asignan al nodo MÁS PROFUNDO activo, no siempre al H2.
+    """
+    paragraphs    = doc.paragraphs
+    structure     = []
+    heading_stack: list = []  # stack de nodos activos por profundidad
 
     for idx in range(start, end):
         if idx >= len(paragraphs):
@@ -102,38 +107,85 @@ def _extract_structure(doc: Document, start: int, end: int) -> list:
         text  = para.text.strip()
 
         if level == 1 and idx == start:
+            # Crear nodo raíz para variables que aparecen directamente bajo el H1
+            # (capítulos sin subsecciones H2, ej: Capítulo 5 con una sola variable)
+            clean_h1 = VAR_RE.sub('', text).replace('\n', ' ').strip()
+            h1_root = {
+                "level": 2, "text": clean_h1 or text,
+                "para_idx": idx, "variables": [], "children": [],
+            }
+            heading_stack = [h1_root]
+            # Se agrega a structure solo si termina con variables
             continue
 
-        if level == 2:
-            current_h2 = {
-                "level": 2, "text": text,
-                "para_idx": idx, "variables": [], "children": [],
-            }
-            structure.append(current_h2)
-
-        elif level and level >= 3:
+        if level is not None and level >= 2:
+            # Limpiar el texto del heading: quitar placeholders [VAR] y saltos blandos
+            clean_text = VAR_RE.sub('', text).replace('\n', ' ').strip()
             node = {
-                "level": level, "text": text,
+                "level": level, "text": clean_text or text,
                 "para_idx": idx, "variables": [], "children": [],
             }
-            if current_h2:
-                current_h2["children"].append(node)
+            depth = level - 2  # 0 → H2, 1 → H3, 2 → H4 …
+
+            # Si el h1_root (stack[0]) tiene variables, publicarlo antes de añadir el H2
+            if depth == 0 and len(heading_stack) == 1 and heading_stack[0].get("variables"):
+                structure.append(heading_stack[0])
+
+            # Recortar el stack a la profundidad del nodo padre
+            heading_stack = heading_stack[:depth]
+
+            if depth == 0:
+                structure.append(node)
+            elif heading_stack:
+                heading_stack[-1]["children"].append(node)
             else:
                 structure.append(node)
 
-        else:
-            full_text = "".join(run.text for run in para.runs)
+            heading_stack.append(node)
+
+            # Algunos templates ponen [VAR] dentro del mismo párrafo del heading.
+            # Usar para.text (recorre TODOS los <w:t> recursivamente, incluyendo
+            # texto dentro de <w:hyperlink> o <w:ins> que para.runs no ve).
+            full_text = para.text
             for match in VAR_RE.finditer(full_text):
                 key = match.group(1)
                 if key.upper() in TABLE_KEYS or key.upper() in IMAGE_KEYS:
                     continue
-                if current_h2 and key not in [v["key"] for v in current_h2["variables"]]:
-                    current_h2["variables"].append({
+                if key not in [v["key"] for v in node["variables"]]:
+                    node["variables"].append({
                         "key":   key,
                         "label": key.replace("_", " ").title(),
                     })
 
+        else:
+            # Párrafo de cuerpo — asignar variables al nodo más profundo activo
+            if not heading_stack:
+                continue
+            current_node = heading_stack[-1]
+            # para.text en lugar de para.runs para capturar texto en hyperlinks/ins
+            full_text = para.text
+            for match in VAR_RE.finditer(full_text):
+                key = match.group(1)
+                if key.upper() in TABLE_KEYS or key.upper() in IMAGE_KEYS:
+                    continue
+                if key not in [v["key"] for v in current_node["variables"]]:
+                    current_node["variables"].append({
+                        "key":   key,
+                        "label": key.replace("_", " ").title(),
+                    })
+
+    # Publicar h1_root si tiene variables directas o hijos (H3 sin H2 intermedios)
+    # y no fue ya publicado. El check len==1 fallaba cuando había H3 en el stack.
+    if heading_stack and heading_stack[0] not in structure:
+        root = heading_stack[0]
+        if root.get("variables") or root.get("children"):
+            structure.insert(0, root)
+
     return structure
+
+
+def _build_full_cache(minio_key: str) -> dict:  # alias público para warmup
+    return _build_cache(minio_key)
 
 
 def _build_cache(minio_key: str) -> dict:
