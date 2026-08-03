@@ -24,7 +24,6 @@ services:
           memory: 256M
     networks:
       - prosedi_net
-      - proproyectapi_prosedi_net
     healthcheck:
       # La imagen no trae curl: el chequeo se hace con el propio Python.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
@@ -33,7 +32,6 @@ services:
       retries: 3
 
 networks:
+  # La crea el stack del backend con ese nombre exacto; aqui solo se usa.
   prosedi_net:
-    external: true
-  proproyectapi_prosedi_net:
     external: true
