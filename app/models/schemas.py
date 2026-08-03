@@ -99,3 +99,7 @@ class ExtractSectionsRequest(BaseModel):
     variables:        Dict[str, str] = {}
     tablas:           List[dict]     = []
     imagenes:         List[dict]     = []
+
+class MarkVariablesRequest(BaseModel):
+    minio_key: str
+    values:    Dict[str, str] = {}   # valores actuales: con valor → verde, sin valor → amarillo

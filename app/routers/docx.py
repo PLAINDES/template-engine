@@ -3,11 +3,15 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 
-from app.models.schemas import ParseResult, FillRequest, FillResult, DeleteResult
+from app.models.schemas import (
+    ParseResult, FillRequest, FillResult, DeleteResult, MarkVariablesRequest,
+)
 from app.core.validators import validate_docx_file
 from app.services import docx_service
+from app.services.variable_marker import mark_variables, list_bookmarks
 from app.utils.minio_client import download_from_minio
 from app.utils.section_cache import invalidate_section_cache
+from app.utils.docx_cache import get_docx_cached
 
 router = APIRouter(tags=["Documents"])
 
@@ -151,3 +155,49 @@ def extract_text(key: str = Query(..., description="MinIO key del .docx")):
         raise HTTPException(404, f"Documento no encontrado: {e}")
     except Exception as e:
         raise HTTPException(500, f"Error extrayendo texto: {e}")
+
+
+@router.get("/docx-bookmarks/{minio_key:path}")
+def get_docx_bookmarks(minio_key: str):
+    """
+    Mapa `variable → marcador` del documento marcado. El editor lo usa para
+    saltar a la variable que se elige en el índice lateral.
+    """
+    try:
+        docx_buffer = get_docx_cached(minio_key)
+    except Exception as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+
+    try:
+        return {"minio_key": minio_key, "bookmarks": list_bookmarks(docx_buffer)}
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo marcadores: {e}")
+
+
+@router.post("/docx-marked")
+def get_docx_marked(request: MarkVariablesRequest):
+    """
+    Devuelve el .docx con cada [VARIABLE] resaltada — amarillo si está vacía,
+    verde si ya tiene valor. Es lo que se abre en el editor OnlyOffice.
+    """
+    try:
+        docx_buffer = get_docx_cached(request.minio_key)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+    except Exception as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+
+    try:
+        marked, total, _, _ = mark_variables(docx_buffer, request.values)
+    except Exception as e:
+        raise HTTPException(500, f"Error marcando variables: {e}")
+
+    filename = request.minio_key.split("/")[-1]
+    return StreamingResponse(
+        BytesIO(marked),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Marked-Variables": str(total),
+        },
+    )

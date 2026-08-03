@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import Response
 from app.models.schemas import HeadingsResult, ExtractSectionsRequest
 from app.services.sections.heading_parser import parse_headings
+from app.services.sections.aspect_detector import detect_aspects
+from app.services.sections.outline_builder import build_outline
 from app.services.sections.section_builder import build_section_document
 from app.services.sections.section_html_extractor import (
     get_section_full,
@@ -30,6 +32,47 @@ async def get_headings(minio_key: str):
         filename=minio_key.split("/")[-1],
         headings=headings,
     )
+
+
+@router.get("/outline/{minio_key:path}")
+async def get_outline(minio_key: str):
+    """
+    Índice completo del documento: todos los títulos, con sus variables y el
+    marcador al que salta el editor.
+    """
+    try:
+        docx_buffer = get_docx_cached(minio_key)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        outline = build_outline(docx_buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error leyendo el índice: {e}")
+
+    return {"minio_key": minio_key, "outline": outline}
+
+
+@router.get("/auto-aspects/{minio_key:path}")
+async def get_auto_aspects(minio_key: str):
+    """
+    Propone la división en aspectos leyendo el índice del documento:
+    un aspecto por capítulo (heading de nivel 1).
+    """
+    try:
+        docx_buffer = get_docx_cached(minio_key)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        headings = parse_headings(docx_buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error leyendo el índice: {e}")
+
+    return {
+        "minio_key": minio_key,
+        "aspects": detect_aspects(headings),
+    }
 
 
 @router.get("/full/{minio_key:path}")
