@@ -102,4 +102,16 @@ class ExtractSectionsRequest(BaseModel):
 
 class MarkVariablesRequest(BaseModel):
     minio_key: str
-    values:    Dict[str, str] = {}   # valores actuales: con valor → verde, sin valor → amarillo
+    values:    Dict[str, str] = {}   # valores actuales: con valor → sombreado de relleno, sin valor → ámbar
+    # índice de párrafo del H1 → color "#RRGGBB" del capítulo, para que en el
+    # documento se vea qué capítulo rellenó cada cosa igual que en el índice
+    chapter_colors: Dict[int, str] = {}
+    # False entrega el documento limpio, sin fondos. Es lo que pide la fase de
+    # revision: los colores ayudan al rellenar, pero al revisar el contenido
+    # estorban — hay que leerlo como lo va a leer quien lo reciba.
+    shading: bool = True
+
+
+class SealCommentsRequest(BaseModel):
+    """Documento al que hay que ponerle un marcador por comentario."""
+    minio_key: str

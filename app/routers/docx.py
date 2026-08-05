@@ -5,9 +5,13 @@ from io import BytesIO
 
 from app.models.schemas import (
     ParseResult, FillRequest, FillResult, DeleteResult, MarkVariablesRequest,
+    SealCommentsRequest,
 )
 from app.core.validators import validate_docx_file
 from app.services import docx_service
+from app.services.comment_reader import leer_comentarios
+from app.services.comment_sealer import sellar_comentarios
+from app.utils.minio_client import upload_to_minio
 from app.services.variable_marker import mark_variables, list_bookmarks
 from app.utils.minio_client import download_from_minio
 from app.utils.section_cache import invalidate_section_cache
@@ -177,8 +181,9 @@ def get_docx_bookmarks(minio_key: str):
 @router.post("/docx-marked")
 def get_docx_marked(request: MarkVariablesRequest):
     """
-    Devuelve el .docx con cada [VARIABLE] resaltada — amarillo si está vacía,
-    verde si ya tiene valor. Es lo que se abre en el editor OnlyOffice.
+    Devuelve el .docx con cada [VARIABLE] sombreada — ámbar lavado si está
+    vacía, y si tiene valor, el color del capítulo que la rellenó (o un verde
+    lavado genérico si no se envía color). Es lo que se abre en OnlyOffice.
     """
     try:
         docx_buffer = get_docx_cached(request.minio_key)
@@ -188,7 +193,9 @@ def get_docx_marked(request: MarkVariablesRequest):
         raise HTTPException(404, f"Documento no encontrado: {e}")
 
     try:
-        marked, total, _, _ = mark_variables(docx_buffer, request.values)
+        marked, total, _, _ = mark_variables(
+            docx_buffer, request.values, request.chapter_colors, request.shading
+        )
     except Exception as e:
         raise HTTPException(500, f"Error marcando variables: {e}")
 
@@ -201,3 +208,62 @@ def get_docx_marked(request: MarkVariablesRequest):
             "X-Marked-Variables": str(total),
         },
     )
+
+
+@router.get("/docx-comments/{minio_key:path}")
+def get_docx_comments(minio_key: str):
+    """
+    Comentarios que lleva dentro el documento, en el orden en que aparecen.
+
+    Se leen del propio .docx y no de lo que reporte el editor: el documento es
+    la fuente de verdad de sus comentarios, y así también se pueden consultar
+    sin tener a nadie con el editor abierto.
+    """
+    # Sin caché a propósito: el caché de `get_docx_cached` no caduca nunca, y
+    # el documento de trabajo cambia con cada guardado del editor. Servir la
+    # copia cacheada devolvería los comentarios de hace dos ediciones.
+    try:
+        docx_buffer = download_from_minio(minio_key)
+    except Exception as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+
+    try:
+        comentarios = leer_comentarios(docx_buffer)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo comentarios: {e}")
+
+    return {"minio_key": minio_key, "comentarios": comentarios}
+
+
+@router.post("/docx-seal-comments")
+def seal_docx_comments(request: SealCommentsRequest):
+    """
+    Pone un marcador invisible alrededor del texto de cada comentario y guarda
+    el documento sellado.
+
+    Es lo que permite corregir despues el trozo exacto que alguien comento: un
+    marcador se puede seleccionar por nombre, y buscar el texto falla en cuanto
+    el mismo parrafo aparece dos veces en el informe.
+    """
+    try:
+        docx_buffer = download_from_minio(request.minio_key)
+    except Exception as e:
+        raise HTTPException(404, f"Documento no encontrado: {e}")
+
+    try:
+        sellado, marcadores = sellar_comentarios(docx_buffer)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Error sellando comentarios: {e}")
+
+    if sellado is not docx_buffer:
+        upload_to_minio(request.minio_key, sellado)
+
+    return {
+        "minio_key": request.minio_key,
+        "marcadores": marcadores,
+        "sellados": len(marcadores),
+    }
