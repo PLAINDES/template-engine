@@ -57,6 +57,11 @@ class Comentario:
     resuelto: bool
     """Orden de aparición en el documento; sirve para listarlos como se leen."""
     posicion: int
+    """Encabezado de nivel 1 bajo el que cae el comentario. Vacío si el
+    documento no tiene encabezados antes de ese punto."""
+    seccion: str
+    """Encabezado más profundo bajo el que cae, dentro de esa sección."""
+    subtitulo: str
 
     def a_dict(self) -> dict:
         return {
@@ -70,6 +75,8 @@ class Comentario:
             "respondeA": self.responde_a,
             "resuelto": self.resuelto,
             "posicion": self.posicion,
+            "seccion": self.seccion,
+            "subtitulo": self.subtitulo,
         }
 
 
@@ -83,12 +90,14 @@ class _Extendido:
 
 @dataclass
 class _Rango:
-    """Texto comentado, posición y marcador, sacados de document.xml."""
+    """Texto comentado, posición, marcador y ubicación, de document.xml."""
 
     texto: str = ""
     posicion: int = 0
     marcador: str | None = None
     partes: List[str] = field(default_factory=list)
+    seccion: str = ""
+    subtitulo: str = ""
 
 
 def _q(nombre: str) -> str:
@@ -109,6 +118,41 @@ def _texto_de(elemento: ElementTree.Element) -> str:
         elif etiqueta == _q("w:tab"):
             trozos.append("\t")
     return "".join(trozos).strip()
+
+
+def _nivel_de_encabezado(parrafo: ElementTree.Element) -> int | None:
+    """Nivel del encabezado, o None si el párrafo no es un encabezado.
+
+    Se mira primero `w:outlineLvl`, que es explícito y no depende del idioma.
+    Cuando no está —lo habitual, porque suele venir en la definición del
+    estilo y no en el párrafo— se deduce del nombre del estilo. Word en
+    español escribe el styleId sin tildes ("Ttulo1"), OnlyOffice y Word en
+    inglés lo escriben "Heading1", y ambos se ven en los documentos que suben
+    los revisores.
+    """
+    propiedades = parrafo.find(_q("w:pPr"))
+    if propiedades is None:
+        return None
+
+    nivel_esquema = propiedades.find(_q("w:outlineLvl"))
+    if nivel_esquema is not None:
+        valor = nivel_esquema.get(_q("w:val"))
+        if valor is not None and valor.isdigit():
+            # outlineLvl cuenta desde 0; los encabezados desde 1
+            return int(valor) + 1
+
+    estilo = propiedades.find(_q("w:pStyle"))
+    if estilo is None:
+        return None
+
+    nombre = (estilo.get(_q("w:val")) or "").lower().replace(" ", "")
+    for prefijo in ("heading", "ttulo", "titulo"):
+        if nombre.startswith(prefijo):
+            resto = nombre[len(prefijo) :]
+            if resto.isdigit():
+                return int(resto)
+
+    return None
 
 
 def _leer_extendidos(zipf: ZipFile) -> Dict[str, _Extendido]:
@@ -140,6 +184,10 @@ def _leer_rangos(zipf: ZipFile) -> Dict[str, _Rango]:
     comentarios están abiertos en cada momento. Un mismo trozo de texto puede
     estar dentro de varios comentarios a la vez —comentarios que se solapan—,
     así que el texto se acumula en todos los que estén abiertos.
+
+    En el mismo recorrido se lleva el último encabezado visto, que es lo que
+    permite decir en qué parte del informe cae cada comentario. Sale gratis:
+    ya se estaban visitando todos los nodos en orden de lectura.
     """
     if RUTA_DOCUMENTO not in zipf.namelist():
         raise ValueError(f"El .docx no tiene {RUTA_DOCUMENTO}")
@@ -148,15 +196,33 @@ def _leer_rangos(zipf: ZipFile) -> Dict[str, _Rango]:
     rangos: Dict[str, _Rango] = {}
     abiertos: set[str] = set()
     orden = 0
+    seccion = ""
+    subtitulo = ""
 
     for nodo in raiz.iter():
         etiqueta = nodo.tag
 
-        if etiqueta == _q("w:commentRangeStart"):
+        if etiqueta == _q("w:p"):
+            nivel = _nivel_de_encabezado(nodo)
+            if nivel is not None:
+                titulo = _texto_de(nodo)
+                if titulo:
+                    if nivel == 1:
+                        seccion = titulo
+                        # Empieza otra sección: el subtítulo de la anterior ya
+                        # no describe dónde estamos
+                        subtitulo = ""
+                    else:
+                        subtitulo = titulo
+
+        elif etiqueta == _q("w:commentRangeStart"):
             ident = nodo.get(_q("w:id"))
             if ident is not None:
                 orden += 1
-                rangos.setdefault(ident, _Rango()).posicion = orden
+                rango = rangos.setdefault(ident, _Rango())
+                rango.posicion = orden
+                rango.seccion = seccion
+                rango.subtitulo = subtitulo
                 abiertos.add(ident)
 
         elif etiqueta == _q("w:commentRangeEnd"):
@@ -244,6 +310,8 @@ def leer_comentarios(docx_buffer: bytes) -> List[dict]:
                     responde_a=id_por_para.get(extendido.padre or ""),
                     resuelto=extendido.resuelto,
                     posicion=rango.posicion,
+                    seccion=rango.seccion,
+                    subtitulo=rango.subtitulo,
                 )
             )
 
