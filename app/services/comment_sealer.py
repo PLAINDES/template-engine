@@ -33,6 +33,18 @@ _INICIO_COMENTARIO = re.compile(r'<w:commentRangeStart w:id="(\d+)"\s*/>')
 _FIN_COMENTARIO = re.compile(r'<w:commentRangeEnd w:id="(\d+)"\s*/>')
 _INICIO_MARCADOR = re.compile(r'<w:bookmarkStart[^>]*w:id="(\d+)"[^>]*/>')
 
+# Los documentos exportados de Google Docs envuelven cada commentRangeStart en
+# un content control vacío (<w:sdt> con tag goog_rdk_N). Un marcador insertado
+# ahí dentro desaparece al abrir el documento: ONLYOFFICE se traga lo que vive
+# en esos controles, y GetBookmarkRange no lo encuentra nunca. Estas dos
+# expresiones detectan el borde del control para poner el marcador fuera.
+_CIERRE_DE_SDT = re.compile(
+    r'(?:<w:bookmarkStart[^>]*/>|<w:bookmarkEnd[^>]*/>)*(?:</w:sdtContent>|</w:sdt>)+'
+)
+_APERTURA_DE_SDT = re.compile(
+    r'<w:sdt><w:sdtPr>(?:(?!</w:sdtPr>).)*</w:sdtPr><w:sdtContent>\Z', re.S
+)
+
 # Comentarios de word/comments.xml: cabecera con los atributos y cuerpo con el
 # texto. De ahí salen las señas con las que se nombra cada marcador.
 _COMENTARIO = re.compile(r"<w:comment\b([^>]*)>(.*?)</w:comment>", re.DOTALL)
@@ -98,12 +110,39 @@ def sellar_comentarios(docx_buffer: bytes) -> Tuple[bytes, Dict[str, str]]:
         return salida.getvalue(), marcadores
 
 
+def _quitar_marcadores_atrapados(xml: str) -> str:
+    """Quita los marcadores de este módulo que quedaron dentro de un content
+    control.
+
+    Un sellado anterior los ponía pegados al commentRangeStart, y cuando ese
+    inicio vive dentro de un control de Google Docs el marcador quedaba
+    atrapado: el editor no lo ve y GetBookmarkRange no lo encuentra. Se quitan
+    —con su cierre— para volver a ponerlos fuera sin duplicar el nombre.
+    """
+    atrapados = re.findall(
+        rf'<w:bookmarkStart w:id="(\d+)" w:name="{PREFIJO}[^"]*"/>'
+        r'(?=</w:sdtContent>|</w:sdt>)',
+        xml,
+    )
+    for id_atrapado in atrapados:
+        xml = re.sub(
+            rf'<w:bookmarkStart w:id="{id_atrapado}" w:name="[^"]*"/>'
+            r'(?=</w:sdtContent>|</w:sdt>)',
+            '',
+            xml,
+            count=1,
+        )
+        xml = re.sub(rf'<w:bookmarkEnd w:id="{id_atrapado}"/>', '', xml, count=1)
+    return xml
+
+
 def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
     """Inserta los marcadores que falten. Devuelve el XML y el mapa id → nombre.
 
     `señas` lleva, por `w:id` de comentario, el autor, la fecha y el texto: es
     de ahí de donde sale el nombre del marcador.
     """
+    xml = _quitar_marcadores_atrapados(xml)
     marcadores: Dict[str, str] = {}
     trabajos: List[Tuple[int, int, str]] = []
 
@@ -117,10 +156,25 @@ def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
 
         nombre = _nombre_del_marcador(ident, señas)
         marcadores[ident] = nombre
-        if _marcador_ya_puesto(xml, inicio.end(), fin.start(), nombre):
+
+        # Si el commentRangeStart cierra un content control de Google Docs,
+        # el marcador va después del cierre; dentro, el editor se lo traga.
+        pos_inicio = inicio.end()
+        cierre = _CIERRE_DE_SDT.match(xml, pos_inicio)
+        if cierre is not None:
+            pos_inicio = cierre.end()
+
+        # Lo mismo al final: si el commentRangeEnd abre un content control,
+        # el marcador de cierre va antes de que el control empiece.
+        pos_fin = fin.start()
+        apertura = _APERTURA_DE_SDT.search(xml[max(0, pos_fin - 2_000) : pos_fin])
+        if apertura is not None:
+            pos_fin -= len(apertura.group(0))
+
+        if _marcador_ya_puesto(xml, pos_inicio, pos_fin, nombre):
             continue
 
-        trabajos.append((inicio.end(), fin.start(), nombre))
+        trabajos.append((pos_inicio, pos_fin, nombre))
 
     if not trabajos:
         return xml, marcadores
