@@ -49,16 +49,16 @@ def _siguiente_id_de_marcador(xml: str) -> int:
     return max(usados, default=0) + 1
 
 
-def _marcador_ya_puesto(xml: str, inicio: int, fin: int) -> str | None:
-    """Nombre del marcador de este módulo que ya envuelve el rango, si lo hay.
+def _marcador_ya_puesto(xml: str, inicio: int, fin: int, nombre: str) -> bool:
+    """Si el marcador de ESTE comentario ya está dentro de su rango.
 
-    Se mira solo el hueco entre el principio y el final del rango del
-    comentario: un marcador que empiece ahí dentro es el nuestro de una pasada
-    anterior.
+    Se busca por su nombre exacto y no por el prefijo: dos comentarios pueden
+    solaparse —tres revisores citando el mismo párrafo—, y con el prefijo a
+    secas el rango de uno encontraba el marcador del otro, se daba por sellado
+    y se quedaba sin marcador propio.
     """
     trozo = xml[inicio:fin]
-    encontrado = re.search(rf'<w:bookmarkStart[^>]*w:name="({PREFIJO}[^"]+)"', trozo)
-    return encontrado.group(1) if encontrado else None
+    return re.search(rf'<w:bookmarkStart[^>]*w:name="{re.escape(nombre)}"', trozo) is not None
 
 
 def sellar_comentarios(docx_buffer: bytes) -> Tuple[bytes, Dict[str, str]]:
@@ -105,10 +105,6 @@ def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
     de ahí de donde sale el nombre del marcador.
     """
     marcadores: Dict[str, str] = {}
-
-    # Se recorre de atrás hacia delante: cada inserción desplaza el texto que
-    # viene después, y al ir en orden inverso las posiciones ya calculadas
-    # siguen siendo válidas.
     trabajos: List[Tuple[int, int, str]] = []
 
     for inicio in _INICIO_COMENTARIO.finditer(xml):
@@ -119,29 +115,34 @@ def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
             # vez de romper el sellado entero de los demás
             continue
 
-        ya_puesto = _marcador_ya_puesto(xml, inicio.end(), fin.start())
-        if ya_puesto is not None:
-            marcadores[ident] = ya_puesto
-            continue
-
         nombre = _nombre_del_marcador(ident, señas)
         marcadores[ident] = nombre
+        if _marcador_ya_puesto(xml, inicio.end(), fin.start(), nombre):
+            continue
+
         trabajos.append((inicio.end(), fin.start(), nombre))
 
     if not trabajos:
         return xml, marcadores
 
+    # Cada tag se inserta por su posición en el XML original, de atrás hacia
+    # delante. Antes se insertaba cada par de una vez —rebanando el texto del
+    # rango entero— y con comentarios solapados las posiciones del siguiente
+    # par quedaban desfasadas y las tags caían en medio de otra tag: el
+    # documento entero salía ilegible. Los marcadores no exigen anidarse bien
+    # en OOXML, así que insertar por posición vale para cualquier solape.
     siguiente_id = _siguiente_id_de_marcador(xml)
-    for pos_inicio, pos_fin, nombre in sorted(trabajos, reverse=True):
+    inserciones: List[Tuple[int, str]] = []
+    for pos_inicio, pos_fin, nombre in trabajos:
         id_marcador = siguiente_id
         siguiente_id += 1
-        xml = (
-            xml[:pos_inicio]
-            + f'<w:bookmarkStart w:id="{id_marcador}" w:name="{nombre}"/>'
-            + xml[pos_inicio:pos_fin]
-            + f'<w:bookmarkEnd w:id="{id_marcador}"/>'
-            + xml[pos_fin:]
+        inserciones.append(
+            (pos_inicio, f'<w:bookmarkStart w:id="{id_marcador}" w:name="{nombre}"/>')
         )
+        inserciones.append((pos_fin, f'<w:bookmarkEnd w:id="{id_marcador}"/>'))
+
+    for posicion, tag in sorted(inserciones, key=lambda i: i[0], reverse=True):
+        xml = xml[:posicion] + tag + xml[posicion:]
 
     return xml, marcadores
 
