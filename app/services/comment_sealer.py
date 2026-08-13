@@ -45,6 +45,18 @@ _APERTURA_DE_SDT = re.compile(
     r'<w:sdt><w:sdtPr>(?:(?!</w:sdtPr>).)*</w:sdtPr><w:sdtContent>\Z', re.S
 )
 
+# Anclaje de comentario que cierra (o abre) un content control: es la forma en
+# que exporta Google Docs, y ONLYOFFICE no sabe dibujar el globo ni el
+# sombreado de un comentario anclado ahí dentro.
+_ANCLA_EN_CIERRE_DE_SDT = re.compile(
+    r'(<w:commentRangeStart w:id="\d+"\s*/>)((?:</w:sdtContent>|</w:sdt>)+)'
+)
+_ANCLA_EN_APERTURA_DE_SDT = re.compile(
+    r'(<w:sdt><w:sdtPr>(?:(?!</w:sdtPr>).)*?</w:sdtPr><w:sdtContent>)'
+    r'(<w:commentRangeEnd w:id="\d+"\s*/>)',
+    re.S,
+)
+
 # Comentarios de word/comments.xml: cabecera con los atributos y cuerpo con el
 # texto. De ahí salen las señas con las que se nombra cada marcador.
 _COMENTARIO = re.compile(r"<w:comment\b([^>]*)>(.*?)</w:comment>", re.DOTALL)
@@ -136,6 +148,23 @@ def _quitar_marcadores_atrapados(xml: str) -> str:
     return xml
 
 
+def _sacar_anclas_de_los_controles(xml: str) -> str:
+    """Saca los anclajes de comentario de los content controls vacíos.
+
+    Google Docs exporta cada `commentRangeStart` envuelto en un control
+    `goog_rdk` sin contenido. ONLYOFFICE no dibuja el globo ni el sombreado de
+    un comentario anclado ahí dentro: "Ir al lugar" llegaba pero no se veía
+    nada y el globo no salía. El anclaje se mueve justo afuera del control, lo
+    que no cambia el trozo comentado porque el control está vacío.
+    """
+    while True:
+        movido = _ANCLA_EN_CIERRE_DE_SDT.sub(r"\2\1", xml)
+        movido = _ANCLA_EN_APERTURA_DE_SDT.sub(r"\2\1", movido)
+        if movido == xml:
+            return xml
+        xml = movido
+
+
 def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
     """Inserta los marcadores que falten. Devuelve el XML y el mapa id → nombre.
 
@@ -143,6 +172,7 @@ def _sellar_xml(xml: str, señas: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
     de ahí de donde sale el nombre del marcador.
     """
     xml = _quitar_marcadores_atrapados(xml)
+    xml = _sacar_anclas_de_los_controles(xml)
     marcadores: Dict[str, str] = {}
     trabajos: List[Tuple[int, int, str]] = []
 
