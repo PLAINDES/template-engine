@@ -50,6 +50,9 @@ class Comentario:
     texto: str
     """Trozo del documento sobre el que se puso el comentario."""
     texto_citado: str
+    """El trozo comentado fue borrado con control de cambios: la cita que se
+    devuelve es ese texto tachado, no texto visible del documento."""
+    cita_eliminada: bool
     """Marcador invisible que envuelve ese trozo, para poder seleccionarlo."""
     marcador: str | None
     """Id del comentario al que responde, o None si abre el hilo."""
@@ -71,6 +74,7 @@ class Comentario:
             "fecha": self.fecha,
             "texto": self.texto,
             "textoCitado": self.texto_citado,
+            "citaEliminada": self.cita_eliminada,
             "marcador": self.marcador,
             "respondeA": self.responde_a,
             "resuelto": self.resuelto,
@@ -96,6 +100,8 @@ class _Rango:
     posicion: int = 0
     marcador: str | None = None
     partes: List[str] = field(default_factory=list)
+    partes_eliminadas: List[str] = field(default_factory=list)
+    cita_eliminada: bool = False
     seccion: str = ""
     subtitulo: str = ""
 
@@ -244,8 +250,20 @@ def _leer_rangos(zipf: ZipFile) -> Dict[str, _Rango]:
             for ident in abiertos:
                 rangos[ident].partes.append(texto)
 
+        elif etiqueta == _q("w:delText") and abiertos:
+            # Texto que alguien borró con control de cambios y todavía está en
+            # el documento, tachado. No cuenta como cita normal, pero si es lo
+            # único que abarca el comentario hay que conservarlo: sin él la
+            # cita salía vacía y el comentario parecía puesto sobre la nada.
+            texto = nodo.text or ""
+            for ident in abiertos:
+                rangos[ident].partes_eliminadas.append(texto)
+
     for rango in rangos.values():
         rango.texto = "".join(rango.partes).strip()
+        if not rango.texto and rango.partes_eliminadas:
+            rango.texto = "".join(rango.partes_eliminadas).strip()
+            rango.cita_eliminada = True
 
     return rangos
 
@@ -306,6 +324,7 @@ def leer_comentarios(docx_buffer: bytes) -> List[dict]:
                     fecha=comentario.get(_q("w:date")) or "",
                     texto=_texto_de(comentario),
                     texto_citado=rango.texto,
+                    cita_eliminada=rango.cita_eliminada,
                     marcador=rango.marcador,
                     responde_a=id_por_para.get(extendido.padre or ""),
                     resuelto=extendido.resuelto,
