@@ -62,12 +62,12 @@ def fill_document(
 
     # 1. Variables de texto
     for para in doc.paragraphs:
-        _replace_vars_in_paragraph(para, variables)
+        _replace_vars_in_paragraph(para, variables, doc)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    _replace_vars_in_paragraph(para, variables)
+                    _replace_vars_in_paragraph(para, variables, doc)
     for section in doc.sections:
         for para in section.header.paragraphs:
             _replace_vars_in_paragraph(para, variables)
@@ -104,7 +104,77 @@ _ANNOTATION_RE = re.compile(
 )
 
 
-def _replace_vars_in_paragraph(para, variables: Dict[str, str]):
+# Bloque de tabla dentro del texto de una variable. La IA lo emite así:
+#   [[TABLA: Título de la tabla]]
+#   Encabezado | Encabezado | Encabezado
+#   celda | celda | celda
+#   [[/TABLA]]
+# y aquí se convierte en una tabla real de Word — pegado como texto plano
+# quedaba un choclo ilegible de barras justificadas.
+_TABLA_START_RE = re.compile(r'^\[\[TABLA(?::\s*(.*?))?\]\]$')
+_TABLA_END = '[[/TABLA]]'
+
+
+def _partir_en_segmentos(lines: List[str]):
+    """Separa las líneas del valor en texto corrido y bloques de tabla."""
+    segmentos = []  # ("texto", línea) o ("tabla", título, filas)
+    i = 0
+    while i < len(lines):
+        m = _TABLA_START_RE.match(lines[i].strip())
+        if m:
+            titulo = (m.group(1) or '').strip()
+            filas = []
+            i += 1
+            while i < len(lines) and lines[i].strip() != _TABLA_END:
+                filas.append([c.strip() for c in lines[i].split('|')])
+                i += 1
+            i += 1  # saltar el [[/TABLA]]
+            if filas:
+                segmentos.append(("tabla", titulo, filas))
+        else:
+            segmentos.append(("texto", lines[i]))
+            i += 1
+    return segmentos
+
+
+def _poner_bordes_de_tabla(table) -> None:
+    """Bordes sencillos en toda la tabla, dibujados directo en el XML."""
+    tbl_pr = table._element.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for lado in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        borde = OxmlElement(f"w:{lado}")
+        borde.set(qn("w:val"), "single")
+        borde.set(qn("w:sz"), "4")
+        borde.set(qn("w:color"), "000000")
+        borders.append(borde)
+    tbl_pr.append(borders)
+
+
+def _construir_tabla(doc: Document, filas: List[List[str]]):
+    """Tabla real con la primera fila como encabezado en negrita."""
+    num_cols = max(len(f) for f in filas)
+    table = doc.add_table(rows=len(filas), cols=num_cols)
+    try:
+        table.style = "Table Grid"
+    except KeyError:
+        # La plantilla no define ese estilo (los .docx solo llevan los estilos
+        # que usan): sin esto la tabla saldría invisible, así que los bordes
+        # se dibujan directamente
+        _poner_bordes_de_tabla(table)
+    for ri, fila in enumerate(filas):
+        for ci, valor in enumerate(fila):
+            if ci >= num_cols:
+                continue
+            cell = table.rows[ri].cells[ci]
+            cell.text = str(valor)
+            if ri == 0:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        r.bold = True
+    return table
+
+
+def _replace_vars_in_paragraph(para, variables: Dict[str, str], doc: Document = None):
     if not para.runs:
         return
     full_text = "".join(run.text for run in para.runs)
@@ -130,22 +200,45 @@ def _replace_vars_in_paragraph(para, variables: Dict[str, str]):
                 run.text = ''
         return
 
-    # Primera línea va en este mismo párrafo (conserva su estilo)
-    if para.runs:
-        para.runs[0].text = lines[0]
+    # Sin documento (cabeceras y pies) los bloques de tabla van como texto
+    segmentos = _partir_en_segmentos(lines) if doc is not None else [("texto", ln) for ln in lines]
+
+    # El primer segmento de texto va en este mismo párrafo (conserva su estilo)
+    primero = segmentos[0] if segmentos else None
+    if primero is not None and primero[0] == "texto":
+        para.runs[0].text = primero[1]
         for run in para.runs[1:]:
             run.text = ''
+        segmentos = segmentos[1:]
+    else:
+        # El valor arranca con una tabla: el placeholder queda vacío
+        for run in para.runs:
+            run.text = ''
 
-    # Líneas siguientes → párrafos nuevos copiando el estilo del placeholder
-    current = para
-    for line in lines[1:]:
-        new_para = copy.deepcopy(para)
-        if new_para.runs:
-            new_para.runs[0].text = line
-            for run in new_para.runs[1:]:
-                run.text = ''
-        current._element.addnext(new_para._element)
-        current = new_para
+    # El resto se inserta en orden después del placeholder
+    anchor = para._element
+    for seg in segmentos:
+        if seg[0] == "texto":
+            new_para = copy.deepcopy(para)
+            if new_para.runs:
+                new_para.runs[0].text = seg[1]
+                for run in new_para.runs[1:]:
+                    run.text = ''
+            anchor.addnext(new_para._element)
+            anchor = new_para._element
+        else:
+            _, titulo, filas = seg
+            if titulo:
+                titulo_para = doc.add_paragraph()
+                run = titulo_para.add_run(titulo)
+                run.font.size = Pt(10)
+                run.font.bold = True
+                titulo_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                anchor.addnext(titulo_para._element)
+                anchor = titulo_para._element
+            table = _construir_tabla(doc, filas)
+            anchor.addnext(table._element)
+            anchor = table._element
 
 
 def _add_caption_paragraph(doc: Document, target_para, text: str, align: str = "center") -> None:

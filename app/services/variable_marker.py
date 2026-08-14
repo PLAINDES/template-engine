@@ -17,6 +17,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from app.services.parser import VAR_RE
+from app.services.filler import _partir_en_segmentos, _construir_tabla
 from app.services.sections.heading_parser import _get_heading_level
 
 # Las variables se pintan con sombreado (w:shd), no con el resaltado de Word.
@@ -203,8 +204,25 @@ def _mark_paragraph(para, values: dict, ctx: dict) -> int:
     marked = 0
     for text, key in segments:
         value = (values.get(key) or "").strip() if key else ""
+
+        # Bloques [[TABLA]] dentro del valor: el texto previo se queda en el
+        # run del párrafo y las tablas (con el texto que las siga) se apuntan
+        # para insertarse como tablas reales al final del marcado — aquí no se
+        # puede mutar el cuerpo porque se está iterando sobre sus párrafos.
+        contenido = value if (key and value) else text
+        if key and value and "[[TABLA" in value:
+            lineas = [ln for ln in value.split("\n") if ln.strip()]
+            partes = _partir_en_segmentos(lineas)
+            if any(p[0] == "tabla" for p in partes):
+                previas = []
+                while partes and partes[0][0] == "texto":
+                    previas.append(partes.pop(0)[1])
+                contenido = "\n".join(previas)
+                del_capitulo = ctx["colores_por_h1"].get(ctx["h1_actual"])
+                ctx["tablas_pendientes"].append((para, partes, del_capitulo))
+
         # Con valor se muestra el valor; sin valor, el propio [PLACEHOLDER]
-        run = para.add_run(value if (key and value) else text)
+        run = para.add_run(contenido)
         if base_rpr_copy is not None:
             run._element.insert(0, copy.deepcopy(base_rpr_copy))
         if key:
@@ -234,6 +252,46 @@ def _mark_paragraph(para, values: dict, ctx: dict) -> int:
                 _wrap_in_bookmark(run, name, ctx["next_id"])
 
     return marked
+
+
+def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear) -> None:
+    """
+    Inserta detrás del párrafo los segmentos que siguieron a la primera tabla
+    del valor: tablas reales de Word y párrafos de texto, en su orden. Las
+    celdas y el texto llevan el sombreado del capítulo, igual que el resto del
+    contenido de la variable.
+    """
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    anchor = para._element
+    for parte in partes:
+        if parte[0] == "texto":
+            nuevo = doc.add_paragraph()
+            run = nuevo.add_run(parte[1])
+            if sombrear and color:
+                _set_run_shading(run, color)
+            nuevo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            anchor.addnext(nuevo._element)
+            anchor = nuevo._element
+        else:
+            _, titulo, filas = parte
+            if titulo:
+                titulo_para = doc.add_paragraph()
+                run = titulo_para.add_run(titulo)
+                run.font.size = Pt(10)
+                run.font.bold = True
+                anchor.addnext(titulo_para._element)
+                anchor = titulo_para._element
+            tabla = _construir_tabla(doc, filas)
+            if sombrear and color:
+                for fila in tabla.rows:
+                    for celda in fila.cells:
+                        for p in celda.paragraphs:
+                            for r in p.runs:
+                                _set_run_shading(r, color)
+            anchor.addnext(tabla._element)
+            anchor = tabla._element
 
 
 def heading_bookmark(para_index: int) -> str:
@@ -308,6 +366,7 @@ def mark_variables(
         "colores_por_h1": colores_por_h1,
         "h1_actual": None,
         "sombrear": shading,
+        "tablas_pendientes": [],
     }
 
     # Primero los títulos: marcar variables reescribe runs y desplaza posiciones
@@ -325,6 +384,11 @@ def mark_variables(
     # Tablas, encabezados y pies heredan el último capítulo del cuerpo
     for para in _iter_paragraphs_fuera_del_cuerpo(doc):
         total += _mark_paragraph(para, values, ctx)
+
+    # Bloques [[TABLA]] apuntados durante el marcado: ahora que ya no se está
+    # iterando el cuerpo, cada uno se vuelve una tabla real detrás de su párrafo
+    for para, partes, color in ctx["tablas_pendientes"]:
+        _insertar_partes_tras_el_parrafo(doc, para, partes, color, shading)
 
     out = BytesIO()
     doc.save(out)
