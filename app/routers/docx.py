@@ -5,7 +5,7 @@ from io import BytesIO
 
 from app.models.schemas import (
     ParseResult, FillRequest, FillResult, DeleteResult, MarkVariablesRequest,
-    SealCommentsRequest,
+    SealCommentsRequest, GenerarMapasRequest,
 )
 from app.core.validators import validate_docx_file
 from app.services import docx_service
@@ -13,6 +13,10 @@ from app.services.comment_reader import leer_comentarios
 from app.services.comment_sealer import sellar_comentarios
 from app.utils.minio_client import upload_to_minio
 from app.services.variable_marker import mark_variables, list_bookmarks
+from app.services.localization_maps import (
+    insertar_mapas_de_localizacion,
+    generar_mapas,
+)
 from app.utils.minio_client import download_from_minio
 from app.utils.section_cache import invalidate_section_cache
 from app.utils.docx_cache import get_docx_cached
@@ -196,6 +200,7 @@ def get_docx_marked(request: MarkVariablesRequest):
         marked, total, _, _ = mark_variables(
             docx_buffer, request.values, request.chapter_colors, request.shading
         )
+        marked = insertar_mapas_de_localizacion(marked, request.values)
     except Exception as e:
         raise HTTPException(500, f"Error marcando variables: {e}")
 
@@ -208,6 +213,25 @@ def get_docx_marked(request: MarkVariablesRequest):
             "X-Marked-Variables": str(total),
         },
     )
+
+
+@router.post("/mapas-localizacion")
+def generar_mapas_localizacion(request: GenerarMapasRequest):
+    """
+    Dibuja y guarda los 4 PNG de macro/micro localización. Se llama al crear
+    el proyecto para que abrir el Word no vuelva a esperar esa generación.
+    """
+    try:
+        generar_mapas(
+            departamento=request.departamento.strip(),
+            provincia=request.provincia.strip(),
+            distrito=request.distrito.strip(),
+            lat=float(request.latitud.replace(",", ".")),
+            lon=float(request.longitud.replace(",", ".")),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Error generando mapas de localización: {e}")
+    return {"ok": True}
 
 
 @router.get("/docx-comments/{minio_key:path}")

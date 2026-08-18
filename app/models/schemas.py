@@ -100,6 +100,14 @@ class ExtractSectionsRequest(BaseModel):
     tablas:           List[dict]     = []
     imagenes:         List[dict]     = []
 
+class GenerarMapasRequest(BaseModel):
+    departamento: str
+    provincia: str
+    distrito: str
+    latitud: str
+    longitud: str
+
+
 class MarkVariablesRequest(BaseModel):
     minio_key: str
     values:    Dict[str, str] = {}   # valores actuales: con valor → sombreado de relleno, sin valor → ámbar
