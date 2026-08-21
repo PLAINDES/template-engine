@@ -17,7 +17,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from app.services.parser import VAR_RE
-from app.services.filler import _partir_en_segmentos, _construir_tabla
+from app.services.filler import _partir_en_segmentos, _construir_tabla, _insertar_imagen_en_linea
 from app.services.sections.heading_parser import _get_heading_level
 
 # Las variables se pintan con sombreado (w:shd), no con el resaltado de Word.
@@ -172,6 +172,27 @@ def _wrap_in_bookmark(run, name: str, bookmark_id: int) -> None:
     run._element.addnext(end)
 
 
+def _agregar_imagen_en_el_parrafo(para, minio_key: str):
+    """
+    Incrusta la imagen como un run más del párrafo, en el sitio exacto donde
+    estaba el marcador. Las líneas de un mismo párrafo (separadas con saltos
+    de línea) conservan así su orden: la imagen empuja lo que venga detrás.
+    """
+    from docx.shared import Inches
+    from app.services.filler import ANCHO_IMAGEN_EN_LINEA
+    from app.utils.minio_client import download_from_minio
+
+    try:
+        image_bytes = download_from_minio(minio_key)
+    except Exception as e:
+        print(f"[marker] error descargando imagen [{minio_key}]: {e}")
+        return None
+
+    run = para.add_run()
+    run.add_picture(BytesIO(image_bytes), width=Inches(ANCHO_IMAGEN_EN_LINEA))
+    return run
+
+
 def _mark_paragraph(para, values: dict, ctx: dict) -> int:
     """
     Reescribe los runs del párrafo separando cada placeholder en su propio run
@@ -205,43 +226,82 @@ def _mark_paragraph(para, values: dict, ctx: dict) -> int:
     for text, key in segments:
         value = (values.get(key) or "").strip() if key else ""
 
-        # Bloques [[TABLA]] dentro del valor: el texto previo se queda en el
-        # run del párrafo y las tablas (con el texto que las siga) se apuntan
-        # para insertarse como tablas reales al final del marcado — aquí no se
-        # puede mutar el cuerpo porque se está iterando sobre sus párrafos.
+        # Bloques dentro del valor. Las imágenes se incrustan como runs del
+        # propio párrafo, en el sitio exacto del marcador — así una línea
+        # "Ilustración N°9: [IMAGEN_9]" recibe su imagen ahí y empuja a las
+        # líneas siguientes del mismo párrafo. Las tablas no caben dentro de
+        # un párrafo: desde la primera tabla, todo se aparta y se inserta
+        # detrás cuando ya no se está iterando el cuerpo.
         contenido = value if (key and value) else text
-        if key and value and "[[TABLA" in value:
+        en_linea  = None
+        diferido  = None
+        if key and value and ("[[TABLA" in value or "[[IMAGEN" in value):
             lineas = [ln for ln in value.split("\n") if ln.strip()]
             partes = _partir_en_segmentos(lineas)
-            if any(p[0] == "tabla" for p in partes):
-                previas = []
-                while partes and partes[0][0] == "texto":
-                    previas.append(partes.pop(0)[1])
-                contenido = "\n".join(previas)
-                del_capitulo = ctx["colores_por_h1"].get(ctx["h1_actual"])
-                ctx["tablas_pendientes"].append((para, partes, del_capitulo))
+            if any(p[0] != "texto" for p in partes):
+                corte     = next((i for i, p in enumerate(partes) if p[0] == "tabla"), len(partes))
+                en_linea  = partes[:corte]
+                apartadas = partes[corte:]
+                if apartadas:
+                    del_capitulo = ctx["colores_por_h1"].get(ctx["h1_actual"])
+                    # El cuarto hueco es para el marcador si no queda run visible
+                    diferido = [para, apartadas, del_capitulo, None]
+                    ctx["tablas_pendientes"].append(diferido)
 
         # Con valor se muestra el valor; sin valor, el propio [PLACEHOLDER]
-        run = para.add_run(contenido)
-        if base_rpr_copy is not None:
-            run._element.insert(0, copy.deepcopy(base_rpr_copy))
-        if key:
-            # El resaltado de Word se limpia por si el documento ya venía
-            # marcado con la versión anterior, que usaba el verde neón
-            run.font.highlight_color = None
+        runs_de_texto  = []
+        run_de_imagen  = None
+        if en_linea is None:
+            run = para.add_run(contenido)
+            if base_rpr_copy is not None:
+                run._element.insert(0, copy.deepcopy(base_rpr_copy))
+            runs_de_texto.append(run)
+        else:
+            primero = True
+            for parte in en_linea:
+                separador = "" if primero else "\n"
+                if parte[0] == "texto":
+                    run = para.add_run(separador + parte[1])
+                    if base_rpr_copy is not None:
+                        run._element.insert(0, copy.deepcopy(base_rpr_copy))
+                    runs_de_texto.append(run)
+                    primero = False
+                else:
+                    _, key_de_imagen, pie = parte
+                    if separador:
+                        salto = para.add_run(separador)
+                        if base_rpr_copy is not None:
+                            salto._element.insert(0, copy.deepcopy(base_rpr_copy))
+                    run_con_imagen = _agregar_imagen_en_el_parrafo(para, key_de_imagen)
+                    if run_con_imagen is not None and run_de_imagen is None:
+                        run_de_imagen = run_con_imagen
+                    if pie:
+                        from docx.shared import Pt, RGBColor
+                        pie_run = para.add_run("\n" + pie)
+                        pie_run.font.size      = Pt(9)
+                        pie_run.font.italic    = True
+                        pie_run.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
+                        runs_de_texto.append(pie_run)
+                    primero = False
 
-            if not ctx["sombrear"]:
-                # Fase de revisión: el documento se entrega limpio. Se quita
-                # también cualquier sombreado heredado del estilo, o quedarían
-                # restos de la fase anterior.
-                _quitar_shading(run)
-            elif value:
-                # El color sale del capítulo donde vive la variable; si ese
-                # capítulo no tiene color asignado se usa el verde lavado
-                del_capitulo = ctx["colores_por_h1"].get(ctx["h1_actual"])
-                _set_run_shading(run, del_capitulo if del_capitulo else SHD_RELLENA_POR_DEFECTO)
-            else:
-                _set_run_shading(run, SHD_VACIA)
+        if key:
+            for run in runs_de_texto:
+                # El resaltado de Word se limpia por si el documento ya venía
+                # marcado con la versión anterior, que usaba el verde neón
+                run.font.highlight_color = None
+
+                if not ctx["sombrear"]:
+                    # Fase de revisión: el documento se entrega limpio. Se quita
+                    # también cualquier sombreado heredado del estilo, o
+                    # quedarían restos de la fase anterior.
+                    _quitar_shading(run)
+                elif value:
+                    # El color sale del capítulo donde vive la variable; si ese
+                    # capítulo no tiene color asignado se usa el verde lavado
+                    del_capitulo = ctx["colores_por_h1"].get(ctx["h1_actual"])
+                    _set_run_shading(run, del_capitulo if del_capitulo else SHD_RELLENA_POR_DEFECTO)
+                else:
+                    _set_run_shading(run, SHD_VACIA)
             marked += 1
 
             # Solo la primera aparición lleva marcador: es a donde salta el editor
@@ -249,12 +309,21 @@ def _mark_paragraph(para, values: dict, ctx: dict) -> int:
                 name = _bookmark_name(key, ctx["used"])
                 ctx["bookmarks"][key] = name
                 ctx["next_id"] += 1
-                _wrap_in_bookmark(run, name, ctx["next_id"])
+                con_texto = next((r for r in runs_de_texto if r.text.strip()), None)
+                if con_texto is not None:
+                    _wrap_in_bookmark(con_texto, name, ctx["next_id"])
+                elif run_de_imagen is not None:
+                    # El valor era solo una imagen: el marcador envuelve su run,
+                    # que sí se puede seleccionar desde el editor
+                    _wrap_in_bookmark(run_de_imagen, name, ctx["next_id"])
+                elif diferido is not None:
+                    # Solo tablas apartadas: el marcador se pone al insertarlas
+                    diferido[3] = (name, ctx["next_id"])
 
     return marked
 
 
-def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear) -> None:
+def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear, marcador=None) -> None:
     """
     Inserta detrás del párrafo los segmentos que siguieron a la primera tabla
     del valor: tablas reales de Word y párrafos de texto, en su orden. Las
@@ -264,7 +333,8 @@ def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear) -> None
     from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    anchor = para._element
+    anchor  = para._element
+    primero = None
     for parte in partes:
         if parte[0] == "texto":
             nuevo = doc.add_paragraph()
@@ -274,6 +344,9 @@ def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear) -> None
             nuevo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             anchor.addnext(nuevo._element)
             anchor = nuevo._element
+        elif parte[0] == "imagen":
+            _, key_de_imagen, pie = parte
+            anchor = _insertar_imagen_en_linea(doc, anchor, key_de_imagen, pie)
         else:
             _, titulo, filas = parte
             if titulo:
@@ -292,6 +365,20 @@ def _insertar_partes_tras_el_parrafo(doc, para, partes, color, sombrear) -> None
                                 _set_run_shading(r, color)
             anchor.addnext(tabla._element)
             anchor = tabla._element
+        if primero is None and anchor is not para._element:
+            primero = anchor
+
+    # Marcador aplazado desde _mark_paragraph: el run de la variable quedó
+    # vacío, así que el salto del editor apunta al primer bloque insertado
+    if marcador is not None and primero is not None:
+        nombre, bookmark_id = marcador
+        start = OxmlElement("w:bookmarkStart")
+        start.set(qn("w:id"), str(bookmark_id))
+        start.set(qn("w:name"), nombre)
+        end = OxmlElement("w:bookmarkEnd")
+        end.set(qn("w:id"), str(bookmark_id))
+        primero.addprevious(start)
+        primero.addnext(end)
 
 
 def heading_bookmark(para_index: int) -> str:
@@ -387,8 +474,8 @@ def mark_variables(
 
     # Bloques [[TABLA]] apuntados durante el marcado: ahora que ya no se está
     # iterando el cuerpo, cada uno se vuelve una tabla real detrás de su párrafo
-    for para, partes, color in ctx["tablas_pendientes"]:
-        _insertar_partes_tras_el_parrafo(doc, para, partes, color, shading)
+    for para, partes, color, marcador in ctx["tablas_pendientes"]:
+        _insertar_partes_tras_el_parrafo(doc, para, partes, color, shading, marcador)
 
     out = BytesIO()
     doc.save(out)

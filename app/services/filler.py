@@ -114,12 +114,30 @@ _ANNOTATION_RE = re.compile(
 _TABLA_START_RE = re.compile(r'^\[\[TABLA(?::\s*(.*?))?\]\]$')
 _TABLA_END = '[[/TABLA]]'
 
+# Imagen dentro del texto de una variable. La escribe el editor cuando el
+# usuario pega, arrastra o elige una imagen en la cajita de la variable:
+#   [[IMAGEN: docx-images/1717000000_mapa.png]]
+#   [[IMAGEN: docx-images/1717000000_mapa.png | Fuente: elaboración propia]]
+# La key es la de MinIO que devolvió /upload-image.
+_IMAGEN_INLINE_RE = re.compile(
+    r'^\[\[IMAGEN:\s*([^|\]]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]$'
+)
+
+# Ancho de la imagen insertada en el texto. Es el mismo que usa el modal de
+# imágenes con nombre, para que las dos vías produzcan la misma página.
+ANCHO_IMAGEN_EN_LINEA = 5.0
+
 
 def _partir_en_segmentos(lines: List[str]):
-    """Separa las líneas del valor en texto corrido y bloques de tabla."""
-    segmentos = []  # ("texto", línea) o ("tabla", título, filas)
+    """Separa las líneas del valor en texto corrido, bloques de tabla e imágenes."""
+    segmentos = []  # ("texto", línea) | ("tabla", título, filas) | ("imagen", key, pie)
     i = 0
     while i < len(lines):
+        img = _IMAGEN_INLINE_RE.match(lines[i].strip())
+        if img:
+            segmentos.append(("imagen", img.group(1), (img.group(2) or '').strip()))
+            i += 1
+            continue
         m = _TABLA_START_RE.match(lines[i].strip())
         if m:
             titulo = (m.group(1) or '').strip()
@@ -174,6 +192,40 @@ def _construir_tabla(doc: Document, filas: List[List[str]]):
     return table
 
 
+def _insertar_imagen_en_linea(doc: Document, anchor, minio_key: str, pie: str):
+    """
+    Coloca la imagen que el usuario pegó dentro del valor de una variable.
+
+    Devuelve el último elemento insertado para que quien recorre los segmentos
+    siga encadenando detrás de él y el orden del texto se conserve.
+    """
+    from app.utils.minio_client import download_from_minio
+
+    try:
+        image_bytes = download_from_minio(minio_key)
+    except Exception as e:
+        print(f"[filler] error descargando imagen en linea [{minio_key}]: {e}")
+        return anchor
+
+    img_para = doc.add_paragraph()
+    img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    img_para.add_run().add_picture(BytesIO(image_bytes), width=Inches(ANCHO_IMAGEN_EN_LINEA))
+    anchor.addnext(img_para._element)
+    anchor = img_para._element
+
+    if pie:
+        pie_para = doc.add_paragraph()
+        run = pie_para.add_run(pie)
+        run.font.size      = Pt(9)
+        run.font.italic    = True
+        run.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
+        pie_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        anchor.addnext(pie_para._element)
+        anchor = pie_para._element
+
+    return anchor
+
+
 def _replace_vars_in_paragraph(para, variables: Dict[str, str], doc: Document = None):
     if not para.runs:
         return
@@ -200,8 +252,12 @@ def _replace_vars_in_paragraph(para, variables: Dict[str, str], doc: Document = 
                 run.text = ''
         return
 
-    # Sin documento (cabeceras y pies) los bloques de tabla van como texto
-    segmentos = _partir_en_segmentos(lines) if doc is not None else [("texto", ln) for ln in lines]
+    # Sin documento (cabeceras y pies) los bloques de tabla van como texto y las
+    # imagenes no se pueden incrustar: se descarta el marcador en vez de dejarlo a la vista
+    segmentos = (
+        _partir_en_segmentos(lines) if doc is not None
+        else [("texto", ln) for ln in lines if not _IMAGEN_INLINE_RE.match(ln.strip())]
+    )
 
     # El primer segmento de texto va en este mismo párrafo (conserva su estilo)
     primero = segmentos[0] if segmentos else None
@@ -226,6 +282,9 @@ def _replace_vars_in_paragraph(para, variables: Dict[str, str], doc: Document = 
                     run.text = ''
             anchor.addnext(new_para._element)
             anchor = new_para._element
+        elif seg[0] == "imagen":
+            _, minio_key, pie = seg
+            anchor = _insertar_imagen_en_linea(doc, anchor, minio_key, pie)
         else:
             _, titulo, filas = seg
             if titulo:

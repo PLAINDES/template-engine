@@ -155,6 +155,21 @@ async def upload_image(file: UploadFile = File(...)):
     return {"key": key, "url": url}
 
 
+@router.get("/image-url")
+def image_url(key: str = Query(..., description="MinIO key de la imagen")):
+    """
+    URL presignada de una imagen ya subida. La usa el editor para mostrar la
+    miniatura de las imagenes que el usuario habia pegado en una variable:
+    lo unico que guarda el borrador es la key.
+    """
+    from app.utils.minio_client import get_presigned_url
+
+    try:
+        return {"key": key, "url": get_presigned_url(key)}
+    except Exception as e:
+        raise HTTPException(500, f"Error obteniendo la URL de la imagen: {e}")
+
+
 @router.get("/extract-text")
 def extract_text(key: str = Query(..., description="MinIO key del .docx")):
     try:
