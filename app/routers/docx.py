@@ -155,19 +155,27 @@ async def upload_image(file: UploadFile = File(...)):
     return {"key": key, "url": url}
 
 
-@router.get("/image-url")
-def image_url(key: str = Query(..., description="MinIO key de la imagen")):
+@router.get("/image")
+def get_image(key: str = Query(..., description="MinIO key de la imagen")):
     """
-    URL presignada de una imagen ya subida. La usa el editor para mostrar la
-    miniatura de las imagenes que el usuario habia pegado en una variable:
-    lo unico que guarda el borrador es la key.
+    Bytes de una imagen ya subida. La usa el editor para la miniatura de las
+    imagenes pegadas en una variable: el borrador solo guarda la key, y una
+    URL presignada de MinIO no sirve al navegador porque apunta al hostname
+    interno del contenedor (http://minio:9000).
     """
-    from app.utils.minio_client import get_presigned_url
+    import mimetypes
 
     try:
-        return {"key": key, "url": get_presigned_url(key)}
+        content = download_from_minio(key)
     except Exception as e:
-        raise HTTPException(500, f"Error obteniendo la URL de la imagen: {e}")
+        if "NoSuchKey" in str(e):
+            raise HTTPException(404, f"Imagen no encontrada: {key}")
+        raise HTTPException(500, f"Error descargando la imagen: {e}")
+
+    media_type, _ = mimetypes.guess_type(key)
+    if media_type is None:
+        media_type = "application/octet-stream"
+    return StreamingResponse(BytesIO(content), media_type=media_type)
 
 
 @router.get("/extract-text")
