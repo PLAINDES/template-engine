@@ -21,6 +21,15 @@ HEADING_STYLES = {
 # suelto ("2018 Informe...") no es una numeración y no debe cambiar de nivel.
 NUMERACION_RE = re.compile(r"^\s*(\d+(?:\.\d+)+)\.?\s")
 
+# Título escrito a mano, sin estilo de título. Las plantillas traen párrafos
+# Normal que son títulos de pleno derecho — "2.1.2. Área de Influencia" — y la
+# tabla de contenidos del propio Word los lista. Para no confundirlos con una
+# frase del cuerpo se exige más que en NUMERACION_RE: dos puntos internos como
+# mínimo (un decimal como "2.5 kilómetros" jamás los tiene), que tras el número
+# venga una letra y que quepa en una línea de título.
+TITULO_ESCRITO_RE = re.compile(r"^\s*(\d+(?:\.\d+){2,})\.?\s+\S*[^\W\d]")
+LARGO_MAXIMO_DE_TITULO_ESCRITO = 120
+
 
 def refine_level_with_numbering(text: str, style_level: int) -> int:
     """
@@ -56,6 +65,16 @@ def _get_heading_level(para) -> int | None:
             val = outlineLvl.get(qn("w:val"))
             if val is not None:
                 return int(val) + 1
+
+    # Sin estilo ni outlineLvl queda el texto: un párrafo Normal que es una
+    # numeración profunda seguida de un título es un título, lo diga o no el
+    # estilo. Detectarlo aquí, en el punto común, hace que el índice, la
+    # estructura por sección y los marcadores de salto lo vean todos igual.
+    texto = para.text.strip()
+    if len(texto) <= LARGO_MAXIMO_DE_TITULO_ESCRITO:
+        match = TITULO_ESCRITO_RE.match(texto)
+        if match is not None:
+            return match.group(1).count(".") + 1
 
     return None
 
