@@ -8,8 +8,12 @@ Enfoque simple y correcto:
 """
 import re
 from docx import Document
+from docx.table import Table
 from io import BytesIO
-from app.services.sections.heading_parser import _get_heading_level
+from app.services.sections.heading_parser import (
+    _get_heading_level,
+    refine_level_with_numbering,
+)
 from app.services.html_converter import docx_to_html
 from app.utils.docx_cache import get_docx_cached
 from app.utils.full_html_cache import (
@@ -25,6 +29,31 @@ VAR_RE = re.compile(
 TABLE_KEYS = {"CREAR_O_AÑADIR_TABLA","CREAR_O_ANADIR_TABLA","AÑADIR_TABLA",
               "ANADIR_TABLA","TABLA","CREAR_TABLA","INSERTAR_TABLA"}
 IMAGE_KEYS = {"IMAGEN","IMAGEN_PEGAR","PEGAR_IMAGEN","INSERTAR_IMAGEN","FOTO"}
+
+
+def _agregar_variables(text: str, node: dict) -> None:
+    """Variables de un texto, colgadas del nodo sin repetir claves."""
+    for match in VAR_RE.finditer(text):
+        key = match.group(1)
+        if key.upper() in TABLE_KEYS or key.upper() in IMAGE_KEYS:
+            continue
+        if key not in [v["key"] for v in node["variables"]]:
+            node["variables"].append({
+                "key":   key,
+                "label": key.replace("_", " ").title(),
+            })
+
+
+def _agregar_variables_de_tabla(table: Table, node: dict) -> None:
+    """Variables de todas las celdas de una tabla.
+
+    Una celda combinada se repite en `row.cells`; da igual, porque las claves
+    repetidas se descartan.
+    """
+    for row in table.rows:
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                _agregar_variables(para.text, node)
 
 
 def _get_h1_ranges(doc: Document) -> list:
@@ -95,16 +124,32 @@ def _extract_structure(doc: Document, start: int, end: int) -> list:
     heading_stack[i] es el nodo activo en profundidad i (0=H2, 1=H3, 2=H4…).
     Las variables se asignan al nodo MÁS PROFUNDO activo, no siempre al H2.
     """
-    paragraphs    = doc.paragraphs
     structure     = []
     heading_stack: list = []  # stack de nodos activos por profundidad
 
-    for idx in range(start, end):
-        if idx >= len(paragraphs):
+    # Cuerpo entero en su orden real, tablas incluidas: `doc.paragraphs` no
+    # contiene los párrafos de dentro de una tabla, y con el rango solo de
+    # párrafos las variables de los cuadros ([CODIGO_M1], [IE_ALTER1]...)
+    # no aparecían en la estructura de la sección.
+    idx = -1
+    for block in doc.iter_inner_content():
+        if isinstance(block, Table):
+            # La tabla pertenece a la sección si el último párrafo visto cae
+            # dentro del rango — mismo criterio que usa _extract_docx_section
+            if start <= idx < end and heading_stack:
+                _agregar_variables_de_tabla(block, heading_stack[-1])
+            continue
+
+        para = block
+        idx += 1
+        if idx < start:
+            continue
+        if idx >= end:
             break
-        para  = paragraphs[idx]
         level = _get_heading_level(para)
         text  = para.text.strip()
+        if level is not None and text:
+            level = refine_level_with_numbering(text, level)
 
         if level == 1 and idx == start:
             # Crear nodo raíz para variables que aparecen directamente bajo el H1
@@ -146,33 +191,14 @@ def _extract_structure(doc: Document, start: int, end: int) -> list:
             # Algunos templates ponen [VAR] dentro del mismo párrafo del heading.
             # Usar para.text (recorre TODOS los <w:t> recursivamente, incluyendo
             # texto dentro de <w:hyperlink> o <w:ins> que para.runs no ve).
-            full_text = para.text
-            for match in VAR_RE.finditer(full_text):
-                key = match.group(1)
-                if key.upper() in TABLE_KEYS or key.upper() in IMAGE_KEYS:
-                    continue
-                if key not in [v["key"] for v in node["variables"]]:
-                    node["variables"].append({
-                        "key":   key,
-                        "label": key.replace("_", " ").title(),
-                    })
+            _agregar_variables(para.text, node)
 
         else:
             # Párrafo de cuerpo — asignar variables al nodo más profundo activo
             if not heading_stack:
                 continue
-            current_node = heading_stack[-1]
             # para.text en lugar de para.runs para capturar texto en hyperlinks/ins
-            full_text = para.text
-            for match in VAR_RE.finditer(full_text):
-                key = match.group(1)
-                if key.upper() in TABLE_KEYS or key.upper() in IMAGE_KEYS:
-                    continue
-                if key not in [v["key"] for v in current_node["variables"]]:
-                    current_node["variables"].append({
-                        "key":   key,
-                        "label": key.replace("_", " ").title(),
-                    })
+            _agregar_variables(para.text, heading_stack[-1])
 
     # Publicar h1_root si tiene variables directas o hijos (H3 sin H2 intermedios)
     # y no fue ya publicado. El check len==1 fallaba cuando había H3 en el stack.

@@ -1,4 +1,5 @@
 # app/services/sections/heading_parser.py
+import re
 from docx import Document
 from docx.oxml.ns import qn
 from io import BytesIO
@@ -10,8 +11,31 @@ HEADING_STYLES = {
     "heading 1": 1, "heading 2": 2, "heading 3": 3,
     "heading 4": 4, "heading 5": 5,
     "título 1":  1, "título 2":  2, "título 3":  3,
+    "título 4":  4, "título 5":  5,
     "titulo 1":  1, "titulo 2":  2, "titulo 3":  3,
+    "titulo 4":  4, "titulo 5":  5,
 }
+
+# Numeración multinivel al inicio del título: "2.1.1.1. Delimitación..."
+# Exige al menos un punto entre números: un título que empiece por un número
+# suelto ("2018 Informe...") no es una numeración y no debe cambiar de nivel.
+NUMERACION_RE = re.compile(r"^\s*(\d+(?:\.\d+)+)\.?\s")
+
+
+def refine_level_with_numbering(text: str, style_level: int) -> int:
+    """
+    Nivel real de un título, corregido con la numeración escrita en su texto.
+
+    Las plantillas no siempre estilan bien los niveles profundos: un
+    "2.1.1.1. Delimitación..." estilado como Título 3 quedaría de hermano del
+    "2.1.1." y el índice lo numeraría "2.1.2.", descuadrando todo lo que sigue.
+    La numeración que el propio título trae escrita es la fuente más fiable:
+    sus componentes son la profundidad.
+    """
+    match = NUMERACION_RE.match(text)
+    if match is None:
+        return style_level
+    return match.group(1).count(".") + 1
 
 
 def _get_heading_level(para) -> int | None:
@@ -49,6 +73,7 @@ def _flat_headings(doc: Document) -> List[dict]:
         text = para.text.strip()
         if not text:
             continue
+        level = refine_level_with_numbering(text, level)
         result.append({"index": idx, "level": level, "text": text})
     return result
 
