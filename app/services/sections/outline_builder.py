@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 from docx import Document
 from docx.table import Table
 
-from app.services.parser import VAR_RE, TABLE_KEYS, _is_image_key
+from app.services.parser import VAR_RE, TABLE_KEYS, IMAGE_KEYS
 from app.services.sections.heading_parser import (
     _get_heading_level,
     refine_level_with_numbering,
@@ -24,16 +24,18 @@ from app.services.variable_marker import heading_bookmark
 def _collect_variables(text: str, node: Dict[str, Any]) -> None:
     """Añade al nodo las variables del texto, sin repetir y sin tablas/imágenes.
 
-    Los placeholders de imagen se filtran con el mismo criterio que el parser
-    (`_is_image_key`, que también entiende los con nombre como IMAGEN_MAPA):
-    si el índice y el editor no coinciden en qué es variable y qué es imagen,
-    el índice lista entradas que al clickarse no abren nada.
+    Solo se apartan los marcadores genéricos ([TABLA], [IMAGEN]...). Los de
+    imagen con nombre —IMAGEN_1, IMAGEN_MAPA— se quedan como variables a
+    propósito: en el editor se rellenan desde la cajita pegando la imagen
+    (el valor lleva su marcador [[IMAGEN: key]]), así que si el índice los
+    esconde no hay desde dónde rellenar la Ilustración N°9. Mismo criterio
+    que la estructura por sección.
     """
     existing = {v["key"] for v in node["variables"]}
     for match in VAR_RE.finditer(text):
         key = match.group(1)
         upper = key.upper()
-        if upper in TABLE_KEYS or _is_image_key(upper) or key in existing:
+        if upper in TABLE_KEYS or upper in IMAGE_KEYS or key in existing:
             continue
         existing.add(key)
         node["variables"].append(
